@@ -192,7 +192,12 @@ tailscale-test.apk: version gradle-dependencies
 # tag_release / bumposs).
 MKVERSION := ./tool/go run tailscale.com/cmd/mkversion
 
-tailscale.version: go.mod go.sum go.toolchain.rev $(wildcard .git/HEAD)
+# OpenRoute: patched tailscale.com used via the replace directive in go.mod.
+.PHONY: tailscale-fork
+tailscale-fork:
+	./scripts/prepare-tailscale-fork.sh
+
+tailscale.version: tailscale-fork go.mod go.sum go.toolchain.rev $(wildcard .git/HEAD)
 	@bash -c "$(MKVERSION) > tailscale.version"
 
 .PHONY: version
@@ -216,7 +221,7 @@ $(GOBIN)/gobind: go.mod go.sum go.toolchain.rev
 	./tool/go install golang.org/x/mobile/cmd/gobind
 
 .PHONY: build-unstripped-aar
-build-unstripped-aar: tailscale.version $(GOBIN)/gomobile
+build-unstripped-aar: tailscale-fork tailscale.version $(GOBIN)/gomobile
 	@echo "Running gomobile bind to generate unstripped AAR..."
 	@echo "Output file: $(ABS_UNSTRIPPED_AAR)"
 	mkdir -p $(dir $(ABS_UNSTRIPPED_AAR))

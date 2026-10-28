@@ -9,10 +9,12 @@ import (
 	"log"
 	"net/netip"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"syscall"
 
 	"github.com/tailscale/tailscale-android/libtailscale/ifaceparse"
+	"github.com/tailscale/tailscale-android/libtailscale/meshroute"
 	rangescalc "github.com/tailscale/tailscale-android/libtailscale/ranges_calc"
 	"github.com/tailscale/wireguard-go/tun"
 	"tailscale.com/net/dns"
@@ -76,11 +78,59 @@ var googleDNSServers = []netip.Addr{
 	netip.MustParseAddr("2001:4860:4860::8844"),
 }
 
+// meshPlaceholderAddr is the VPN address used when the mesh is up but
+// Tailscale has no addresses yet (for example, started offline in the
+// field). 192.0.0.8 is the IANA "IPv4 dummy address" (RFC 7600).
+var meshPlaceholderAddr = netip.MustParsePrefix("192.0.0.8/32")
+
+var (
+	rescueRoutes = []netip.Prefix{
+		netip.MustParsePrefix("0.0.0.0/1"),
+		netip.MustParsePrefix("128.0.0.0/1"),
+	}
+	rescueDNSServers = []netip.Addr{
+		netip.MustParseAddr("1.1.1.1"),
+		netip.MustParseAddr("8.8.8.8"),
+	}
+)
+
 func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig) (err error) {
 	b.logger.Logf("updateTUN: changed")
 	defer b.logger.Logf("updateTUN: finished")
 
-	if disableTUN := len(rcfg.LocalAddrs) == 0; disableTUN {
+	origRcfg, origDcfg := rcfg, dcfg
+	if rcfg == nil {
+		rcfg = &router.Config{}
+	}
+	tsRoutes := slices.Clone(rcfg.Routes)
+	meshroute.SetTailnetRoutes(tsRoutes)
+
+	// OpenRoute: while the mesh link is up, the TUN also carries the mesh
+	// subnets (and, during internet rescue, the IPv4 internet); meshTUN
+	// diverts that traffic before it reaches WireGuard.
+	mesh := meshroute.Current()
+	routes := slices.Clone(rcfg.Routes)
+	localRoutes := rcfg.LocalRoutes
+	localAddrs := rcfg.LocalAddrs
+	if mesh.Active() {
+		routes = append(routes, mesh.Prefixes...)
+		if mesh.Rescue {
+			routes = append(routes, rescueRoutes...)
+		}
+		localRoutes = slices.DeleteFunc(slices.Clone(localRoutes), func(p netip.Prefix) bool {
+			for _, mp := range mesh.Prefixes {
+				if p.Overlaps(mp) && p.Bits() >= mp.Bits() {
+					return true
+				}
+			}
+			return false
+		})
+		if len(localAddrs) == 0 {
+			localAddrs = []netip.Prefix{meshPlaceholderAddr}
+		}
+	}
+
+	if disableTUN := len(localAddrs) == 0; disableTUN {
 		b.logger.Logf("updateTUN: closing old TUNs")
 		b.CloseTUNs()
 		b.logger.Logf("updateTUN: closed old TUNs")
@@ -108,10 +158,18 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig) (err error)
 		return err
 	}
 	b.logger.Logf("updateTUN: set MTU")
+	if dcfg == nil && mesh.Active() && mesh.Rescue {
+		dcfg = &dns.OSConfig{}
+	}
 	if dcfg != nil {
 		nameservers := dcfg.Nameservers
 		if b.avoidEmptyDNS && len(nameservers) == 0 {
 			nameservers = googleDNSServers
+		}
+		if mesh.Active() && mesh.Rescue && len(nameservers) == 0 {
+			// The underlying (mesh) network's DNS can't reach the
+			// internet; use public resolvers, carried over cellular.
+			nameservers = rescueDNSServers
 		}
 		for _, dns := range nameservers {
 			if err := builder.AddDNSServer(dns.String()); err != nil {
@@ -135,7 +193,7 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig) (err error)
 
 	if useExclude {
 		// For API 33+, use ExcludeRoute for LocalRoutes and AddRoute for Routes.
-		for _, route := range rcfg.Routes {
+		for _, route := range routes {
 			// Normalize route address; Builder.addRoute does not accept non-zero masked bits.
 			route = route.Masked()
 			if err := builder.AddRoute(route.Addr().String(), int32(route.Bits())); err != nil {
@@ -143,7 +201,7 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig) (err error)
 			}
 		}
 
-		for _, route := range rcfg.LocalRoutes {
+		for _, route := range localRoutes {
 			addr := route.Addr()
 			if addr.IsLoopback() {
 				continue // Skip the loopback addresses since VpnService throws an exception for those (both IPv4 and IPv6) - see https://android.googlesource.com/platform/frameworks/base/+/c741553/core/java/android/net/VpnService.java#303
@@ -154,10 +212,10 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig) (err error)
 			}
 		}
 
-		b.logger.Logf("updateTUN: added %d routes (exclude-mode), localRoutes=%d", len(rcfg.Routes), len(rcfg.LocalRoutes))
+		b.logger.Logf("updateTUN: added %d routes (exclude-mode), localRoutes=%d", len(routes), len(localRoutes))
 	} else {
 		// Older APIs: compute allowed-minus-disallowed prefixes and AddRoute them.
-		prefixesV4, prefixesV6, err := rangescalc.Calculate(rcfg.Routes, rcfg.LocalRoutes)
+		prefixesV4, prefixesV6, err := rangescalc.Calculate(routes, localRoutes)
 		if err != nil {
 			b.logger.Logf("updateTUN: route calculation error: %v", err)
 			return err
@@ -181,21 +239,21 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig) (err error)
 			len(prefixesV4),
 			len(prefixesV6),
 			len(prefixesV4)+len(prefixesV6),
-			len(rcfg.Routes),
-			len(rcfg.LocalRoutes),
+			len(routes),
+			len(localRoutes),
 		)
-		b.logger.Logf("updateTUN: input routes: %v", rcfg.Routes)
-		b.logger.Logf("updateTUN: input local routes: %v", rcfg.LocalRoutes)
+		b.logger.Logf("updateTUN: input routes: %v", routes)
+		b.logger.Logf("updateTUN: input local routes: %v", localRoutes)
 		b.logger.Logf("updateTUN: effective routes v4: %v", prefixesV4)
 		b.logger.Logf("updateTUN: effective routes v6: %v", prefixesV6)
 	}
 
-	for _, addr := range rcfg.LocalAddrs {
+	for _, addr := range localAddrs {
 		if err := builder.AddAddress(addr.Addr().String(), int32(addr.Bits())); err != nil {
 			return err
 		}
 	}
-	b.logger.Logf("updateTUN: added %d local addrs", len(rcfg.LocalAddrs))
+	b.logger.Logf("updateTUN: added %d local addrs", len(localAddrs))
 
 	parcelFD, err := builder.Establish()
 	if err != nil {
@@ -241,8 +299,8 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig) (err error)
 		b.logger.Logf("tunnel brought up")
 	}
 
-	b.lastCfg = rcfg
-	b.lastDNSCfg = dcfg
+	b.lastCfg = origRcfg
+	b.lastDNSCfg = origDcfg
 	return nil
 }
 

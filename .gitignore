@@ -57,3 +57,6 @@ tailscale.version
 
 # local tmp folder
 .tmp/
+
+# OpenRoute: generated patched tailscale.com (scripts/prepare-tailscale-fork.sh)
+/third_party/

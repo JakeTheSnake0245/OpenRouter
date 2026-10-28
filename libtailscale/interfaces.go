@@ -83,6 +83,14 @@ type AppContext interface {
 
 	BindSocketToNetwork(fd int32) bool
 
+	// BindSocketToMesh binds the socket to the OpenRoute mesh network
+	// (the radio link). It returns false if there is no mesh network.
+	BindSocketToMesh(fd int32) bool
+
+	// BindSocketToInternet binds the socket to the best internet-capable
+	// network other than the mesh link, for internet rescue.
+	BindSocketToInternet(fd int32) bool
+
 	// GetUserCACertsPEM returns PEM-encoded user-installed CA certificates
 	// from the Android KeyStore, or empty bytes if none are installed.
 	GetUserCACertsPEM() ([]byte, error)

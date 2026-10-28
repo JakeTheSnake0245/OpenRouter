@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/tailscale/tailscale-android/libtailscale/meshroute"
 	"tailscale.com/drive/driveimpl"
 	_ "tailscale.com/feature/condregister"
 	"tailscale.com/feature/taildrop"
@@ -89,6 +91,7 @@ func start(dataDir, directFileRoot string, hwAttestationPref bool, appCtx AppCon
 		os.Setenv("HOME", dataDir)
 	}
 
+	meshroute.SetBinder(appCtx)
 	return newApp(dataDir, directFileRoot, hwAttestationPref, appCtx)
 }
 
@@ -176,8 +179,9 @@ func (a *App) runBackend(ctx context.Context, hardwareAttestation bool) error {
 	b.avoidEmptyDNS = a.isChromeOS()
 
 	var (
-		cfg   configPair
-		state ipn.State
+		cfg           configPair
+		state         ipn.State
+		lastMeshLocal netip.Addr
 	)
 
 	stateCh := make(chan ipn.State)
@@ -212,6 +216,7 @@ func (a *App) runBackend(ctx context.Context, hardwareAttestation bool) error {
 				// Still the same VPN instance, do nothing
 				break
 			}
+			meshroute.SetProtect(s.Protect)
 			netns.SetAndroidProtectFunc(func(fd int) error {
 				if !s.Protect(int32(fd)) {
 					// TODO(bradfitz): return an error back up to netns if this fails, once
@@ -256,9 +261,28 @@ func (a *App) runBackend(ctx context.Context, hardwareAttestation bool) error {
 					log.Printf("tunnel brought down on disconnect")
 				}
 				b.CloseTUNs()
+				meshroute.SetProtect(nil)
 				netns.SetAndroidProtectFunc(nil)
 				netns.SetAndroidBindToNetworkFunc(nil)
 				vpnService.service = nil
+			}
+		case <-onMeshStateChanged:
+			// OpenRoute: the mesh link or its settings changed. Rebuild
+			// the TUN so its routes match, whatever the Tailscale state.
+			if vpnService.service != nil {
+				if err := b.updateTUN(cfg.rcfg, cfg.dcfg); err != nil {
+					a.closeVpnService(err, b)
+				}
+			}
+			// Reopen magicsock's sockets so the mesh-bound socket
+			// follows the device's mesh address.
+			var meshLocal netip.Addr
+			if m := meshroute.Current(); m != nil {
+				meshLocal = m.LocalAddr
+			}
+			if meshLocal != lastMeshLocal {
+				lastMeshLocal = meshLocal
+				b.backend.DebugRebind()
 			}
 		case i := <-onDNSConfigChanged:
 			// TODO (barnstar): Consider using [dns.Manager.RecompileDNSConfig] here.
@@ -331,7 +355,7 @@ func (a *App) newBackend(dataDir string, appCtx AppContext, store *stateStore,
 		GetBaseConfigFunc: b.getDNSBaseConfig,
 	}
 	engine, err := wgengine.NewUserspaceEngine(logf, wgengine.Config{
-		Tun:            b.devices,
+		Tun:            meshroute.NewTUN(b.devices),
 		Router:         vf,
 		DNS:            vf,
 		ReconfigureVPN: vf.ReconfigureVPN,

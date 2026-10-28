@@ -1,0 +1,22 @@
+--- a/wgengine/magicsock/magicsock.go	2026-10-28 10:00:18
++++ b/wgengine/magicsock/magicsock.go	2026-10-28 10:00:18
+@@ -3750,8 +3750,18 @@
+ 	if c.testOnlyPacketListener != nil {
+ 		return nettype.MakePacketListenerWithNetIP(c.testOnlyPacketListener).ListenPacket(ctx, network, addr)
+ 	}
+-	return nettype.MakePacketListenerWithNetIP(netns.Listener(c.logf, c.netMon)).ListenPacket(ctx, network, addr)
++	lc := netns.Listener(c.logf, c.netMon)
++	if h := ListenPacketHook; h != nil {
++		return h(ctx, network, addr, lc)
++	}
++	return nettype.MakePacketListenerWithNetIP(lc).ListenPacket(ctx, network, addr)
+ }
++
++// ListenPacketHook, if non-nil, replaces the default socket creation for
++// magicsock's UDP sockets. It receives the [net.ListenConfig] that would
++// otherwise be used. OpenRoute sets it to add a second, mesh-bound socket
++// so peers on a local mesh radio can be reached directly.
++var ListenPacketHook func(ctx context.Context, network, addr string, lc *net.ListenConfig) (nettype.PacketConn, error)
+ 
+ // bindSocket binds a UDP socket to ruc.
+ // Network indicates the UDP socket type; it must be "udp4" or "udp6".
