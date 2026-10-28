@@ -49,6 +49,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -125,6 +126,8 @@ data class MainViewNavigation(
     val onNavigateToExitNodes: () -> Unit,
     val onNavigateToHealth: () -> Unit,
     val onNavigateToSearch: () -> Unit,
+    val onNavigateToMesh: () -> Unit,
+    val onNavigateToCustomControl: () -> Unit,
 )
 
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
@@ -216,6 +219,9 @@ fun MainView(
               }
             },
         )
+        if (!hideHeader) {
+          MeshStatusCard(onClick = navigation.onNavigateToMesh)
+        }
         when (state) {
           Ipn.State.Running -> {
             viewModel.maybeRequestVpnPermission()
@@ -225,7 +231,9 @@ fun MainView(
             if (showKeyExpiry) {
               netmap?.let { ExpiryNotification(netmap = it, action = { viewModel.login() }) }
             }
-            if (showExitNodePicker.value == ShowHide.Show) {
+            // OpenRoute: exit nodes are left to the standalone Tailscale app, so the exit
+            // node picker is hidden unless an MDM policy explicitly asks for it.
+            if (showExitNodePicker.value == ShowHide.Show && showExitNodePicker.isSet) {
               ExitNodeStatus(
                   navAction = navigation.onNavigateToExitNodes,
                   viewModel = viewModel,
@@ -257,6 +265,7 @@ fun MainView(
                 loginAtUrl,
                 netmap?.SelfNode,
                 { viewModel.showVPNPermissionLauncherIfUnauthorized() },
+                navigation.onNavigateToCustomControl,
             )
           }
         }
@@ -484,6 +493,7 @@ fun ConnectView(
     loginAtUrlAction: (String) -> Unit,
     selfNode: Tailcfg.Node?,
     showVPNPermissionLauncher: () -> Unit,
+    customControlAction: () -> Unit = {},
 ) {
   LaunchedEffect(isPrepared) {
     if (!isPrepared && shouldStartAutomatically) {
@@ -606,6 +616,10 @@ fun ConnectView(
                 text = stringResource(id = R.string.log_in),
                 fontSize = MaterialTheme.typography.titleMedium.fontSize,
             )
+          }
+          // OpenRoute: most users sign in through their organization's Headscale/SSO server.
+          TextButton(onClick = customControlAction) {
+            Text(text = stringResource(id = R.string.use_organization_server))
           }
         }
       }
@@ -1111,6 +1125,8 @@ fun MainViewPreview() {
           onNavigateToExitNodes = {},
           onNavigateToHealth = {},
           onNavigateToSearch = {},
+          onNavigateToMesh = {},
+          onNavigateToCustomControl = {},
       ),
       vm,
   )

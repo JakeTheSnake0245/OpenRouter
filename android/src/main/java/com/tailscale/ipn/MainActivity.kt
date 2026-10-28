@@ -78,6 +78,7 @@ import com.tailscale.ipn.ui.view.MDMSettingsDebugView
 import com.tailscale.ipn.ui.view.MainView
 import com.tailscale.ipn.ui.view.MainViewNavigation
 import com.tailscale.ipn.ui.view.ManagedByView
+import com.tailscale.ipn.ui.view.MeshView
 import com.tailscale.ipn.ui.view.MullvadExitNodePicker
 import com.tailscale.ipn.ui.view.MullvadExitNodePickerList
 import com.tailscale.ipn.ui.view.MullvadInfoView
@@ -331,6 +332,10 @@ class MainActivity : ComponentActivity() {
                         viewModel.enableSearchAutoFocus()
                         navController.navigate("search")
                       },
+                      onNavigateToMesh = { navController.navigate("mesh") },
+                      onNavigateToCustomControl = {
+                        navController.navigate("loginWithCustomControl")
+                      },
                   )
               val settingsNav =
                   SettingsNav(
@@ -390,6 +395,7 @@ class MainActivity : ComponentActivity() {
               }
               composable("exitNodes") { ExitNodePicker(exitNodePickerNav) }
               composable("health") { HealthView(backTo("main")) }
+              composable("mesh") { MeshView(backTo("main")) }
               composable("mullvad") { MullvadExitNodePickerList(exitNodePickerNav) }
               composable("mullvad_info") { MullvadInfoView(exitNodePickerNav) }
               composable(

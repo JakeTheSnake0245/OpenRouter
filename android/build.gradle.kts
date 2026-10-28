@@ -15,6 +15,9 @@ repositories {
 
 kotlin { compilerOptions { jvmTarget = JvmTarget.JVM_17 } }
 
+// OpenRoute release version; the Tailscale base version is appended to versionName.
+val openRouteVersion = "1.0.0"
+
 android {
   val androidApiLevel = providers.gradleProperty("androidApiLevel").get().toInt()
 
@@ -22,11 +25,13 @@ android {
   compileSdk = androidApiLevel
 
   defaultConfig {
+    // OpenRoute: installs alongside the stock Tailscale app.
+    applicationId = "com.openmanet.openroute"
     minSdk = 26
     targetSdk = androidApiLevel
 
     versionCode = computeVersionCode()
-    versionName = getVersionProperty("VERSION_LONG")
+    versionName = "$openRouteVersion (Tailscale ${getVersionProperty("VERSION_SHORT")})"
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
     buildConfigField(
@@ -51,11 +56,30 @@ android {
   flavorDimensions += "version"
   namespace = "com.tailscale.ipn"
 
+  // OpenRoute: release signing key, configured in keystore.properties (not in git).
+  val keystoreProperties = Properties()
+  rootProject
+      .file("keystore.properties")
+      .takeIf { it.exists() }
+      ?.inputStream()
+      ?.use { keystoreProperties.load(it) }
+  if (!keystoreProperties.isEmpty) {
+    signingConfigs {
+      create("release") {
+        storeFile = file(keystoreProperties.getProperty("storeFile"))
+        storePassword = keystoreProperties.getProperty("storePassword")
+        keyAlias = keystoreProperties.getProperty("keyAlias")
+        keyPassword = keystoreProperties.getProperty("keyPassword")
+      }
+    }
+  }
+
   buildTypes {
     debug { manifestPlaceholders["leanbackRequired"] = isTV() }
 
     release {
       manifestPlaceholders["leanbackRequired"] = isTV()
+      signingConfig = signingConfigs.findByName("release")
       isMinifyEnabled = true
       isShrinkResources = true
 

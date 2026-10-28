@@ -156,6 +156,19 @@ $(DEBUG_APK): libtailscale debug-symbols version gradle-dependencies build-unstr
 	install -C android/build/outputs/apk/debug/android-debug.apk $@
 
 # Builds the release AAB and signs it (phone/tablet/chromeOS variant)
+# OpenRoute: signed release APK for sideloading (needs android/keystore.properties).
+OPENROUTE_VERSION := $(shell sed -n 's/^val openRouteVersion = "\(.*\)"$$/\1/p' android/build.gradle.kts)
+
+.PHONY: openroute-apk
+openroute-apk: version
+	@test -f android/keystore.properties || { echo "android/keystore.properties missing; see README-OpenRoute.md"; exit 1; }
+	# Always rebuild the Go library: the derived .so/.aar files don't track Go source changes.
+	rm -f libgojni.so.unstripped libgojni.so.stripped libgojni.so.debug $(LIBTAILSCALE_AAR)
+	$(MAKE) libtailscale
+	(cd android && ./gradlew assembleRelease -PVERSION_CODE_BASE=$(VERSION_CODE_BASE))
+	install -C android/build/outputs/apk/release/android-release.apk OpenRoute-$(OPENROUTE_VERSION).apk
+	@echo "Built OpenRoute-$(OPENROUTE_VERSION).apk"
+
 .PHONY: release
 release: jarsign-env $(RELEASE_AAB)
 	@jarsigner -sigalg SHA256withRSA -digestalg SHA-256 -keystore $(JKS_PATH) -storepass $(JKS_PASSWORD) $(RELEASE_AAB) tailscale

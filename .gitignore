@@ -60,3 +60,7 @@ tailscale.version
 
 # OpenRoute: generated patched tailscale.com (scripts/prepare-tailscale-fork.sh)
 /third_party/
+
+# OpenRoute release signing (never commit)
+android/keystore.properties
+*.jks

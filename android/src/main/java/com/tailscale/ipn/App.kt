@@ -27,6 +27,7 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.tailscale.ipn.mdm.MDMSettings
 import com.tailscale.ipn.mdm.MDMSettingsChangedReceiver
+import com.tailscale.ipn.mesh.MeshRouter
 import com.tailscale.ipn.ui.localapi.Client
 import com.tailscale.ipn.ui.model.Ipn
 import com.tailscale.ipn.ui.model.Netmap
@@ -186,6 +187,7 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
     favoritesManager = FavoritesManager(Notifier.state, Notifier.netmap, applicationScope)
     connectivityManager = this.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     NetworkChangeCallback.monitorDnsChanges(connectivityManager, dns)
+    MeshRouter.init(this)
     initViewModels()
     applicationScope.launch {
       val restrictionsManager =
@@ -504,6 +506,10 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
   override fun hardwareAttestationKeyLoad(id: String) {
     return getKeyStore().load(id)
   }
+
+  override fun bindSocketToMesh(fd: Int): Boolean = MeshRouter.bindSocketToMesh(fd)
+
+  override fun bindSocketToInternet(fd: Int): Boolean = MeshRouter.bindSocketToInternet(fd)
 
   override fun bindSocketToNetwork(fd: Int): Boolean {
     val net =
