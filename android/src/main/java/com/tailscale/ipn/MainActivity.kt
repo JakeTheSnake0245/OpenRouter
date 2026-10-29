@@ -616,6 +616,8 @@ class MainActivity : ComponentActivity() {
     val restrictionsManager =
         this.getSystemService(Context.RESTRICTIONS_SERVICE) as RestrictionsManager
     lifecycleScope.launch(Dispatchers.IO) { MDMSettings.update(App.get(), restrictionsManager) }
+    // Android only shows Wi-Fi names to apps in the foreground.
+    com.tailscale.ipn.mesh.MeshRouter.recheckWifi()
   }
 
   override fun onStop() {

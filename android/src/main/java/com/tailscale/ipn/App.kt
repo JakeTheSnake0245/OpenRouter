@@ -254,6 +254,8 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
    * Tailscale because directFileRoot must be set before LocalBackend starts being used.
    */
   fun startLibtailscale(directFileRoot: String, hardwareAttestation: Boolean) {
+    // OpenRoute: apply the offline map setting before the backend can load a saved map.
+    Libtailscale.setOfflineMapEnabled(MeshRouter.offlineMapEnabled(this))
     app = Libtailscale.start(this.filesDir.absolutePath, directFileRoot, hardwareAttestation, this)
     ShareFileHelper.init(this, app, directFileRoot, applicationScope)
     Notifier.setApp(app)
@@ -779,7 +781,8 @@ open class UninitializedApp : Application() {
       return true
     }
 
-    return getUnencryptedPrefs().getBoolean(IS_CLIENT_LOGGING_ENABLED_KEY, true)
+    // OpenRoute: off unless turned on in Settings, so nothing reaches Tailscale's log servers.
+    return getUnencryptedPrefs().getBoolean(IS_CLIENT_LOGGING_ENABLED_KEY, false)
   }
 
   fun updateIsClientLoggingEnabled(value: Boolean) {

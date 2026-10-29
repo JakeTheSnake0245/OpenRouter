@@ -151,6 +151,7 @@ func (a *App) runBackend(ctx context.Context, hardwareAttestation bool) error {
 	a.logIDPublicAtomic.Store(&b.logIDPublic)
 	a.logger.Store(b.logger)
 	a.backend = b.backend
+	offlineMapBackend.Store(b.backend)
 	if hardwareAttestation {
 		a.backend.SetHardwareAttested()
 	}
@@ -300,6 +301,8 @@ func (a *App) newBackend(dataDir string, appCtx AppContext, store *stateStore,
 
 	sys := tsd.NewSystem()
 	sys.Set(store)
+	// OpenRoute: encrypt the cached tailnet map.
+	ipnlocal.NetmapCacheStoreHook = netmapCacheHook(store)
 
 	if pemData, err := appCtx.GetUserCACertsPEM(); err != nil {
 		log.Printf("GetUserCACertsPEM: %v", err)

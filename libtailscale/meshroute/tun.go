@@ -19,13 +19,18 @@ func classifyDivert(dst netip.Addr) (netKind, bool) {
 	if !s.Active() || !dst.Is4() {
 		return 0, false
 	}
+	// Tailnet addresses (including MagicDNS at 100.100.100.100) always go
+	// through WireGuard, whatever the mesh link claims.
+	if tsaddr.CGNATRange().Contains(dst) {
+		return 0, false
+	}
 	if s.Contains(dst) {
 		return netMesh, true
 	}
 	if !s.Rescue {
 		return 0, false
 	}
-	if !dst.IsGlobalUnicast() || tsaddr.IsTailscaleIP(dst) {
+	if !dst.IsGlobalUnicast() {
 		return 0, false
 	}
 	if rp := tailnetRoutes.Load(); rp != nil {

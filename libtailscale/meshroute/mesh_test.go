@@ -75,6 +75,34 @@ func TestClassifyDivert(t *testing.T) {
 	}
 }
 
+// TestMeshCannotCaptureTailnet checks that a mesh link can't pull tailnet
+// traffic out of WireGuard, even if its DHCP hands out a subnet covering it.
+func TestMeshCannotCaptureTailnet(t *testing.T) {
+	setMeshForTest(t, "10.41.0.0/16", false)
+
+	// A hostile or misconfigured radio offering 100.80.0.5/8: the prefix is
+	// refused outright.
+	SetState("100.0.0.0/8", "100.80.0.5", false)
+	if Current().Active() {
+		t.Errorf("prefix overlapping the tailnet was accepted: %v", Current().Prefixes)
+	}
+
+	// Too wide.
+	SetState("0.0.0.0/1,10.41.0.0/16", "10.41.0.2", false)
+	if got := Current().Prefixes; len(got) != 1 || got[0] != netip.MustParsePrefix("10.41.0.0/16") {
+		t.Errorf("prefixes = %v, want only 10.41.0.0/16", got)
+	}
+
+	// Even if such a prefix got into the state, tailnet addresses and
+	// MagicDNS are never diverted.
+	cur.Store(&State{Prefixes: []netip.Prefix{netip.MustParsePrefix("100.0.0.0/8")}})
+	for _, a := range []string{"100.100.100.100", "100.64.0.12", "100.127.255.1"} {
+		if _, ok := classifyDivert(netip.MustParseAddr(a)); ok {
+			t.Errorf("%s diverted to the mesh", a)
+		}
+	}
+}
+
 func TestBuildEchoReply(t *testing.T) {
 	src := [4]byte{10, 41, 0, 9}
 	dst := [4]byte{10, 41, 0, 2}

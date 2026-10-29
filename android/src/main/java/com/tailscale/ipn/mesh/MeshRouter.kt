@@ -23,6 +23,7 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
+import com.tailscale.ipn.App
 import com.tailscale.ipn.MainActivity
 import com.tailscale.ipn.NetworkChangeCallback
 import com.tailscale.ipn.R
@@ -64,9 +65,15 @@ object MeshRouter {
   const val KEY_MESH_HOST = "mesh_host"
   const val KEY_WATCHDOG = "watchdog"
   const val KEY_RESCUE = "rescue"
+  const val KEY_OFFLINE_MAP = "offline_map"
   private const val KEY_WIFI_LAST_SUBNET = "wifi_last_subnet"
 
   const val DEFAULT_CIDRS = "10.41.0.0/16" // OpenMANET's mesh subnet
+
+  /** The widest subnet that may be routed to the mesh. Must match meshroute.MinMeshPrefixBits. */
+  private const val MIN_MESH_PREFIX = 8
+  /** Tailscale's address range; never routed to the mesh. */
+  private const val TAILNET_CIDR = "100.64.0.0/10"
 
   private const val ALERT_CHANNEL_ID = "openroute-mesh-alerts"
   private const val ALERT_NOTIFICATION_ID = 41
@@ -310,7 +317,7 @@ object MeshRouter {
           return
         }
         val ssid = prefs.getString(KEY_HOTSPOT_SSID, "")!!.trim()
-        val pass = prefs.getString(KEY_HOTSPOT_PASS, "")!!
+        val pass = hotspotPassword(appContext)
         if (ssid.isEmpty()) {
           publish(linkDetail = "no radio hotspot chosen")
           return
@@ -453,27 +460,38 @@ object MeshRouter {
       }
       return
     }
+    // The name is hidden (Android does this for apps in the background). Only a network on the
+    // same subnet the designated Wi-Fi had last time, inside the mesh ranges, is taken on trust;
+    // anything else waits until OpenRoute is opened and can read the name.
     val lastSubnet = prefs.getString(KEY_WIFI_LAST_SUBNET, "")
     val subnet = cm.getLinkProperties(network)?.let { subnetOf(it) }
-    if (!subnet.isNullOrEmpty() && subnet == lastSubnet) {
+    if (
+        !subnet.isNullOrEmpty() &&
+            subnet == lastSubnet &&
+            meshRanges().any { intersect(subnet, it) != null }
+    ) {
       TSLog.d(TAG, "Wi-Fi matches last mesh subnet $subnet — adopting as mesh link")
       adoptMesh(network)
       return
     }
-    publish(linkDetail = "Wi-Fi present, name unreadable — checking…")
-    handler.postDelayed(
-        {
-          if (meshNetwork != null) return@postDelayed
-          val now = cm.getNetworkCapabilities(network) ?: return@postDelayed
-          if (!now.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
-            TSLog.d(TAG, "unvalidated Wi-Fi — assuming it is the mesh link")
-            adoptMesh(network)
-          } else {
-            publish(linkDetail = "Wi-Fi has internet — not the mesh (open OpenRoute to confirm)")
-          }
-        },
-        WIFI_CANDIDATE_DELAY_MS,
-    )
+    publish(linkDetail = "Wi-Fi name hidden — open OpenRoute to check for “$targetSsid”")
+  }
+
+  /**
+   * Looks again for the designated Wi-Fi network. Called when OpenRoute comes to the foreground,
+   * where Android lets it read Wi-Fi names.
+   */
+  fun recheckWifi() {
+    handler.post {
+      if (!initialized || meshNetwork != null || targetSsid.isEmpty()) return@post
+      if (LinkMode.from(prefs.getString(KEY_LINK_MODE, null)) != LinkMode.WIFI) return@post
+      @Suppress("DEPRECATION") val networks = cm.allNetworks
+      for (network in networks) {
+        val caps = cm.getNetworkCapabilities(network) ?: continue
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) wifiCandidate(network, caps)
+        if (meshNetwork != null) return@post
+      }
+    }
   }
 
   private fun adoptMesh(network: Network) {
@@ -509,13 +527,24 @@ object MeshRouter {
     val enabled = prefs.getBoolean(KEY_ENABLED, true)
     val v4 = lp?.linkAddresses?.firstOrNull { it.address is Inet4Address }
 
+    // The mesh ranges bound what may be routed: in auto mode, the link's own subnet is routed only
+    // where it falls inside them, so a radio (or a network mistaken for one) can't claim other
+    // addresses by handing out a wide subnet.
+    val ranges = meshRanges()
+    var refused: String? = null
     val routes =
         if (!enabled || mesh == null) {
           emptyList()
         } else if (prefs.getBoolean(KEY_AUTO_SUBNET, true)) {
-          listOfNotNull(lp?.let { subnetOf(it) })
+          val sub = lp?.let { subnetOf(it) }
+          val inRange = sub?.let { s -> ranges.mapNotNull { intersect(s, it) }.distinct() }.orEmpty()
+          if (sub != null && inRange.isEmpty()) {
+            refused = "Link subnet $sub is outside the mesh ranges (${ranges.joinToString()}) — not routed"
+            TSLog.w(TAG, refused)
+          }
+          inRange
         } else {
-          parseCidrs(prefs.getString(KEY_CIDRS, DEFAULT_CIDRS)!!)
+          ranges
         }
     if (
         routes.isNotEmpty() && LinkMode.from(prefs.getString(KEY_LINK_MODE, null)) == LinkMode.WIFI
@@ -557,7 +586,7 @@ object MeshRouter {
         interfaceName = iface,
         prefixLength = v4?.prefixLength ?: 0,
         rescueActive = rescueActive,
-        error = if (mesh != null && v4 == null) "No IPv4 address on the mesh link" else null,
+        error = refused ?: if (mesh != null && v4 == null) "No IPv4 address on the mesh link" else null,
     )
   }
 
@@ -742,9 +771,78 @@ object MeshRouter {
     return "${(net shr 24) and 0xff}.${(net shr 16) and 0xff}.${(net shr 8) and 0xff}.${net and 0xff}/$prefix"
   }
 
-  /** Parses comma-separated IPv4 CIDRs, normalizing each; invalid entries are dropped. */
+  /** The configured mesh ranges, the outer bound for anything routed to the mesh. */
+  private fun meshRanges(): List<String> = parseCidrs(prefs.getString(KEY_CIDRS, DEFAULT_CIDRS)!!)
+
+  /**
+   * Parses comma-separated IPv4 CIDRs, normalizing each; invalid or unsafe (see [unsafeReason])
+   * entries are dropped.
+   */
   fun parseCidrs(text: String): List<String> =
-      text.split(',').mapNotNull { normalizeCidr(it.trim()) }
+      text.split(',').mapNotNull { normalizeCidr(it.trim()) }.filter { unsafeReason(it) == null }
+
+  /**
+   * Why a normalized CIDR can't be routed to the mesh, or null if it can. Mesh traffic leaves the
+   * phone unencrypted, so subnets wider than /8 or covering the tailnet's addresses are refused.
+   */
+  fun unsafeReason(cidr: String): String? {
+    val (_, bits) = split(cidr) ?: return "not a CIDR"
+    if (bits < MIN_MESH_PREFIX) return "wider than /$MIN_MESH_PREFIX"
+    if (overlaps(cidr, TAILNET_CIDR)) return "overlaps the tailnet range $TAILNET_CIDR"
+    return null
+  }
+
+  /** The narrower of a and b if one contains the other, else null. */
+  private fun intersect(a: String, b: String): String? {
+    val (na, ba) = split(a) ?: return null
+    val (nb, bb) = split(b) ?: return null
+    val bits = minOf(ba, bb)
+    return if (na and maskOf(bits) == nb and maskOf(bits)) (if (ba >= bb) a else b) else null
+  }
+
+  private fun overlaps(a: String, b: String) = intersect(a, b) != null
+
+  private fun split(cidr: String): Pair<Long, Int>? {
+    val norm = normalizeCidr(cidr) ?: return null
+    val (addr, bits) = norm.split('/')
+    var a = 0L
+    for (o in addr.split('.')) a = (a shl 8) or o.toLong()
+    return a to bits.toInt()
+  }
+
+  private fun maskOf(bits: Int) = if (bits == 0) 0L else (0xffffffffL shl (32 - bits)) and 0xffffffffL
+
+  // Secrets and the offline tailnet map.
+
+  /** The radio hotspot password, kept in encrypted preferences. */
+  fun hotspotPassword(context: Context): String {
+    val plain = prefs(context)
+    val secret = App.get().getEncryptedPrefs()
+    // Move a password saved in the clear by OpenRoute 1.1.1 or earlier.
+    plain.getString(KEY_HOTSPOT_PASS, null)?.let {
+      secret.edit().putString(KEY_HOTSPOT_PASS, it).commit()
+      plain.edit().remove(KEY_HOTSPOT_PASS).commit()
+    }
+    return secret.getString(KEY_HOTSPOT_PASS, "")!!
+  }
+
+  fun setHotspotPassword(context: Context, pass: String) {
+    prefs(context).edit().remove(KEY_HOTSPOT_PASS).commit()
+    App.get().getEncryptedPrefs().edit().putString(KEY_HOTSPOT_PASS, pass).commit()
+  }
+
+  fun offlineMapEnabled(context: Context) = prefs(context).getBoolean(KEY_OFFLINE_MAP, true)
+
+  /** Turns the saved tailnet map on or off; off also deletes it. */
+  fun setOfflineMapEnabled(context: Context, on: Boolean) {
+    prefs(context).edit().putBoolean(KEY_OFFLINE_MAP, on).apply()
+    scope.launch { Libtailscale.setOfflineMapEnabled(on) }
+  }
+
+  /** Deletes the saved tailnet map now. */
+  fun wipeOfflineMap() {
+    scope.launch { Libtailscale.clearOfflineMap() }
+  }
 
   /** Returns the normalized form of an IPv4 CIDR, or null if it isn't one. */
   fun normalizeCidr(s: String): String? {

@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+
+	"tailscale.com/net/tsaddr"
 )
 
 // State is the mesh configuration most recently reported by the app.
@@ -89,6 +91,10 @@ func SetState(prefixes, localAddr string, rescue bool) bool {
 			log.Printf("mesh: ignoring invalid prefix %q: %v", s, err)
 			continue
 		}
+		if why := unsafeMeshPrefix(p); why != "" {
+			log.Printf("mesh: refusing prefix %v: %s", p, why)
+			continue
+		}
 		ns.Prefixes = append(ns.Prefixes, p.Masked())
 	}
 	if a, err := netip.ParseAddr(strings.TrimSpace(localAddr)); err == nil && a.Is4() {
@@ -104,6 +110,22 @@ func SetState(prefixes, localAddr string, rescue bool) bool {
 	}
 	log.Printf("mesh: state changed: prefixes=%v localAddr=%v rescue=%v", ns.Prefixes, ns.LocalAddr, ns.Rescue)
 	return true
+}
+
+// MinMeshPrefixBits is the widest mesh subnet accepted (a /8).
+const MinMeshPrefixBits = 8
+
+// unsafeMeshPrefix reports why p can't be routed to the mesh, or "" if it
+// can. Mesh traffic leaves the device unencrypted, so a subnet that covers
+// the tailnet's addresses, or a huge slice of the internet, is refused.
+func unsafeMeshPrefix(p netip.Prefix) string {
+	if p.Bits() < MinMeshPrefixBits {
+		return "wider than /8"
+	}
+	if p.Overlaps(tsaddr.CGNATRange()) {
+		return "overlaps the tailnet range 100.64.0.0/10"
+	}
+	return ""
 }
 
 // tailnetRoutes holds the routes Tailscale itself wants in the VPN (from

@@ -16,7 +16,7 @@ repositories {
 kotlin { compilerOptions { jvmTarget = JvmTarget.JVM_17 } }
 
 // OpenRoute release version; the Tailscale base version is appended to versionName.
-val openRouteVersion = "1.1.1"
+val openRouteVersion = "1.1.2"
 
 android {
   val androidApiLevel = providers.gradleProperty("androidApiLevel").get().toInt()

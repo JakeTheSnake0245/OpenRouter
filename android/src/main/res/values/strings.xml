@@ -434,8 +434,14 @@
     <string name="mesh_scan_empty">No networks found yet. Wait a few seconds and scan again.</string>
     <string name="mesh_subnets_header">Mesh subnets</string>
     <string name="mesh_auto_subnet">Auto — route the link\'s own subnet</string>
-    <string name="mesh_auto_subnet_subtitle">Reads the subnet from the mesh link when it attaches (OpenMANET: 10.41.0.0/16).</string>
+    <string name="mesh_auto_subnet_subtitle">Reads the subnet from the mesh link when it attaches, and routes it only where it falls inside the mesh ranges below.</string>
     <string name="mesh_cidrs">Subnets (comma-separated CIDRs)</string>
+    <string name="mesh_ranges_auto">Mesh ranges (comma-separated CIDRs)</string>
+    <string name="mesh_offline_map_header">Offline tailnet map</string>
+    <string name="mesh_offline_map">Start without the server</string>
+    <string name="mesh_offline_map_subtitle">Keeps an encrypted copy of the tailnet\'s device list so the VPN can start with no internet. It stops being used 72 hours after the server last updated it.</string>
+    <string name="mesh_offline_map_wipe">Wipe saved map</string>
+    <string name="mesh_offline_map_wiped">Saved map deleted. While the setting is on, a new one is saved the next time the server is reachable.</string>
     <string name="mesh_host_header">Mesh host · watchdog · test</string>
     <string name="mesh_host_hint">Mesh host IP (radio, node, or TAK server)</string>
     <string name="mesh_watchdog">Alert when the mesh host stops responding</string>

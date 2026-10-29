@@ -20,7 +20,15 @@
  			}
 --- a/ipn/ipnlocal/diskcache.go
 +++ b/ipn/ipnlocal/diskcache.go
-@@ -11,6 +11,7 @@
+@@ -7,10 +7,15 @@
+ 	"context"
+ 	"errors"
+ 	"fmt"
++	"os"
++	"path/filepath"
++	"sync/atomic"
++	"time"
+ 
  	"tailscale.com/feature/buildfeatures"
  	"tailscale.com/ipn/ipnlocal/netmapcache"
  	"tailscale.com/tailcfg"
@@ -28,44 +36,201 @@
  	"tailscale.com/types/netmap"
  )
  
-@@ -84,6 +85,21 @@
+@@ -20,6 +25,8 @@
+ 
+ 	dir   string // active profile cache directory
+ 	cache *netmapcache.Cache
++
++	confirmedAt time.Time // when the confirmation stamp was last written
+ }
+ 
+ // writePeerDeltaToDiskLocked applies the specified peer delta to the cache,
+@@ -33,7 +40,11 @@
+ 		return err
+ 	}
+ 	// Do not log this, we get deltas all the time and it's very noisy.
+-	return b.diskCache.cache.UpdatePeers(b.currentNode().Context(), update, remove)
++	if err := b.diskCache.cache.UpdatePeers(b.currentNode().Context(), update, remove); err != nil {
++		return err
++	}
++	b.noteNetmapConfirmedLocked()
++	return nil
+ }
+ 
+ // writeNetmapToDiskLockedWithoutPeers updates nm in the cache, excluding peers and profiles.
+@@ -55,7 +66,11 @@
+ 		return err
+ 	}
+ 	b.logf("writing netmap to disk cache")
+-	return b.diskCache.cache.Store(b.currentNode().Context(), b.patchNetmapHomeDERPLocked(nm))
++	if err := b.diskCache.cache.Store(b.currentNode().Context(), b.patchNetmapHomeDERPLocked(nm)); err != nil {
++		return err
++	}
++	b.noteNetmapConfirmedLocked()
++	return nil
+ }
+ 
+ func (b *LocalBackend) patchNetmapHomeDERPLocked(nm *netmap.NetworkMap) *netmap.NetworkMap {
+@@ -78,12 +93,106 @@
+ 		return err
+ 	}
+ 	if c := b.diskCache; c.cache == nil || c.dir != dir {
+-		b.diskCache.cache = netmapcache.NewCache(netmapcache.FileStore(dir))
++		b.diskCache.cache = netmapcache.NewCache(netmapCacheStore(dir))
+ 		b.diskCache.dir = dir
++		b.diskCache.confirmedAt = time.Time{}
+ 	}
  	return nil
  }
  
-+// ForceCacheNetworkMaps, if set, caches network maps on disk even when the
-+// control plane doesn't grant [nodecap.CacheNetworkMaps] (Headscale doesn't),
-+// so the node can start from its last-known tailnet while offline.
-+// [nodecap.DisableCacheNetworkMaps] still turns caching off.
-+var ForceCacheNetworkMaps bool
++// OpenRoute overrides for the network map disk cache.
++var (
++	// ForceCacheNetworkMaps, if set, caches network maps on disk even when the
++	// control plane doesn't grant [nodecap.CacheNetworkMaps] (Headscale
++	// doesn't), so the node can start from its last-known tailnet while
++	// offline. [nodecap.DisableCacheNetworkMaps] still turns caching off.
++	ForceCacheNetworkMaps bool
++
++	// NetworkMapCacheOff, if set, turns the cache off locally: network maps
++	// are neither written nor loaded, and a cached map found at startup is
++	// discarded.
++	NetworkMapCacheOff atomic.Bool
++
++	// CachedNetworkMapMaxAge, if positive, limits how long after the control
++	// plane last sent a network map (or peer update) a cached copy may still
++	// be loaded. Older caches are discarded, so changes made on the control
++	// plane while the node was offline, such as removing a lost device, take
++	// effect within this long.
++	CachedNetworkMapMaxAge time.Duration
++
++	// NetmapCacheStoreHook, if non-nil, wraps the store that holds cached
++	// network maps, for example to encrypt them.
++	NetmapCacheStoreHook func(netmapcache.Store) netmapcache.Store
++)
++
++// netmapCacheConfirmedFile is the profile data file whose modification time
++// records when the control plane last sent a network map.
++const netmapCacheConfirmedFile = "netmap-cache-confirmed"
++
++// netmapConfirmedPath returns the confirmation file for the cache in cacheDir.
++func netmapConfirmedPath(cacheDir string) string {
++	return filepath.Join(filepath.Dir(cacheDir), netmapCacheConfirmedFile)
++}
++
++func netmapCacheStore(dir string) netmapcache.Store {
++	var s netmapcache.Store = netmapcache.FileStore(dir)
++	if h := NetmapCacheStoreHook; h != nil {
++		s = h(s)
++	}
++	return s
++}
 +
 +// cacheNetworkMapsEnabled reports whether network maps for cn should be
 +// cached on disk.
 +func cacheNetworkMapsEnabled(cn *nodeBackend) bool {
-+	if cn.SelfHasCap(nodecap.DisableCacheNetworkMaps) {
++	if NetworkMapCacheOff.Load() || cn.SelfHasCap(nodecap.DisableCacheNetworkMaps) {
 +		return false
 +	}
 +	return ForceCacheNetworkMaps || cn.SelfHasCap(nodecap.CacheNetworkMaps)
 +}
 +
++// noteNetmapConfirmedLocked records that the control plane just sent a
++// network map. It writes at most once a minute.
++func (b *LocalBackend) noteNetmapConfirmedLocked() {
++	now := time.Now()
++	if now.Sub(b.diskCache.confirmedAt) < time.Minute {
++		return
++	}
++	path := netmapConfirmedPath(b.diskCache.dir)
++	if err := os.WriteFile(path, nil, 0600); err != nil {
++		b.logf("netmap cache: recording confirmation: %v", err)
++		return
++	}
++	os.Chtimes(path, now, now)
++	b.diskCache.confirmedAt = now
++}
++
++// cachedNetmapUsableLocked reports whether a cached network map for the
++// current profile may be loaded, discarding it if not.
++func (b *LocalBackend) cachedNetmapUsableLocked(dir string) bool {
++	discard := func(why string) bool {
++		b.logf("netmap cache: %s; discarding", why)
++		if err := b.clearStoreLocked(b.currentNode().Context(), netmapcache.FileStore(dir)); err != nil {
++			b.logf("clearing netmap cache: %v", err)
++		}
++		return false
++	}
++	if NetworkMapCacheOff.Load() {
++		return discard("turned off on this device")
++	}
++	if CachedNetworkMapMaxAge <= 0 {
++		return true
++	}
++	fi, err := os.Stat(netmapConfirmedPath(dir))
++	if err != nil {
++		return discard("no record of when the control plane last confirmed it")
++	}
++	if age := time.Since(fi.ModTime()); age > CachedNetworkMapMaxAge || age < -time.Hour {
++		return discard(fmt.Sprintf("last confirmed %v ago, limit %v", age.Round(time.Minute), CachedNetworkMapMaxAge))
++	}
++	return true
++}
++
  func (b *LocalBackend) loadDiskCacheLocked() (om *netmap.NetworkMap, ok bool) {
  	if !buildfeatures.HasCacheNetMap {
  		return nil, false
---- /dev/null
+@@ -93,9 +202,13 @@
+ 		b.logf("profile data directory: %v", err)
+ 		return nil, false
+ 	}
++	if !b.cachedNetmapUsableLocked(dir) {
++		return nil, false
++	}
+ 	if c := b.diskCache; c.cache == nil || c.dir != dir {
+-		b.diskCache.cache = netmapcache.NewCache(netmapcache.FileStore(dir))
++		b.diskCache.cache = netmapcache.NewCache(netmapCacheStore(dir))
+ 		b.diskCache.dir = dir
++		b.diskCache.confirmedAt = time.Time{}
+ 	}
+ 	nm, err := b.diskCache.cache.Load(b.currentNode().Context())
+ 	if err != nil {
+@@ -120,6 +233,7 @@
+ 	if err := b.clearStoreLocked(b.currentNode().Context(), store); err != nil {
+ 		b.logf("clearing netmap cache: %v", err)
+ 	}
++	os.Remove(netmapConfirmedPath(b.diskCache.dir))
+ 	b.diskCache = diskCache{} // drop in-memory state
+ }
+ 
+@@ -156,6 +270,7 @@
+ 		if err != nil {
+ 			errs = append(errs, fmt.Errorf("clear netmap cache for profile %q: %w", p.ID(), err))
+ 		}
++		os.Remove(b.profileDataPathLocked(p.ID(), netmapCacheConfirmedFile))
+ 	}
+ 
+ 	b.diskCache = diskCache{} // drop in-memory state
+--- a/ipn/ipnlocal/openroute_test.go
 +++ b/ipn/ipnlocal/openroute_test.go
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,274 @@
 +// Copyright (c) Tailscale Inc & AUTHORS
 +// SPDX-License-Identifier: BSD-3-Clause
 +
 +package ipnlocal
 +
 +import (
++	"bytes"
++	"context"
++	"iter"
 +	"net/netip"
 +	"os"
 +	"path/filepath"
 +	"testing"
++	"time"
 +
 +	"tailscale.com/health"
 +	"tailscale.com/ipn"
++	"tailscale.com/ipn/ipnlocal/netmapcache"
 +	"tailscale.com/ipn/store/mem"
 +	"tailscale.com/tailcfg"
 +	"tailscale.com/tailcfg/nodecap"
@@ -87,6 +252,37 @@
 +	ForceCacheNetworkMaps = true
 +	t.Cleanup(func() { ForceCacheNetworkMaps = false })
 +
++	clb, testMap, cacheDir := newOpenRouteCacheTest(t)
++	cacheEntries := func() int {
++		des, err := os.ReadDir(cacheDir)
++		if err != nil && !os.IsNotExist(err) {
++			t.Fatalf("List cache directory: %v", err)
++		}
++		return len(des)
++	}
++
++	// No capability from control: cached anyway.
++	clb.mu.Lock()
++	clb.setNetMapLocked(testMap)
++	clb.mu.Unlock()
++	if cacheEntries() == 0 {
++		t.Fatal("netmap not cached with ForceCacheNetworkMaps set")
++	}
++
++	// Control explicitly disables caching: the cache is discarded.
++	testMap.AllCaps = set.Of(nodecap.DisableCacheNetworkMaps)
++	clb.mu.Lock()
++	clb.setNetMapLocked(testMap)
++	clb.mu.Unlock()
++	if n := cacheEntries(); n != 0 {
++		t.Fatalf("cache has %d entries after DisableCacheNetworkMaps, want 0", n)
++	}
++}
++
++// newOpenRouteCacheTest starts a LocalBackend with a temporary var root and
++// returns it with a test netmap and the profile's netmap cache directory.
++func newOpenRouteCacheTest(t *testing.T) (*LocalBackend, *netmap.NetworkMap, string) {
++	t.Helper()
 +	varRoot := t.TempDir()
 +	cacheDir := filepath.Join(varRoot, "profile-data", "id0", "netmap-cache")
 +
@@ -138,29 +334,156 @@
 +	if err := clb.Start(ipn.Options{}); err != nil {
 +		t.Fatalf("Start local backend: %v", err)
 +	}
++	return clb, testMap, cacheDir
 +
-+	cacheEntries := func() int {
-+		des, err := os.ReadDir(cacheDir)
-+		if err != nil && !os.IsNotExist(err) {
-+			t.Fatalf("List cache directory: %v", err)
-+		}
-+		return len(des)
++}
++
++func countFiles(t *testing.T, dir string) int {
++	t.Helper()
++	des, err := os.ReadDir(dir)
++	if err != nil && !os.IsNotExist(err) {
++		t.Fatalf("List cache directory: %v", err)
 +	}
++	return len(des)
++}
 +
-+	// No capability from control: cached anyway.
++// loadCached reports whether clb would start from its cached netmap.
++func loadCached(clb *LocalBackend) bool {
++	clb.mu.Lock()
++	defer clb.mu.Unlock()
++	_, ok := clb.loadDiskCacheLocked()
++	return ok
++}
++
++// TestCachedNetworkMapMaxAge checks that a cache the control plane hasn't
++// confirmed within CachedNetworkMapMaxAge is discarded instead of loaded.
++func TestCachedNetworkMapMaxAge(t *testing.T) {
++	t.Setenv("TS_USE_CACHED_NETMAP", "1")
++	ForceCacheNetworkMaps = true
++	CachedNetworkMapMaxAge = time.Hour
++	t.Cleanup(func() { ForceCacheNetworkMaps = false; CachedNetworkMapMaxAge = 0 })
++
++	clb, testMap, cacheDir := newOpenRouteCacheTest(t)
 +	clb.mu.Lock()
 +	clb.setNetMapLocked(testMap)
 +	clb.mu.Unlock()
-+	if cacheEntries() == 0 {
-+		t.Fatal("netmap not cached with ForceCacheNetworkMaps set")
++	if !loadCached(clb) {
++		t.Fatal("fresh cache not loaded")
 +	}
 +
-+	// Control explicitly disables caching: the cache is discarded.
-+	testMap.AllCaps = set.Of(nodecap.DisableCacheNetworkMaps)
++	stamp := netmapConfirmedPath(cacheDir)
++	old := time.Now().Add(-2 * time.Hour)
++	if err := os.Chtimes(stamp, old, old); err != nil {
++		t.Fatal(err)
++	}
++	if loadCached(clb) {
++		t.Fatal("expired cache loaded")
++	}
++	if n := countFiles(t, cacheDir); n != 0 {
++		t.Fatalf("expired cache has %d entries, want 0", n)
++	}
++
++	// A cache with no confirmation record (e.g. written by an older build) is
++	// treated as expired.
 +	clb.mu.Lock()
++	clb.diskCache.confirmedAt = time.Time{}
 +	clb.setNetMapLocked(testMap)
 +	clb.mu.Unlock()
-+	if n := cacheEntries(); n != 0 {
-+		t.Fatalf("cache has %d entries after DisableCacheNetworkMaps, want 0", n)
++	os.Remove(stamp)
++	if loadCached(clb) {
++		t.Fatal("unconfirmed cache loaded")
 +	}
 +}
++
++// TestNetworkMapCacheOff checks the local off switch: nothing is written,
++// and an existing cache is discarded rather than loaded.
++func TestNetworkMapCacheOff(t *testing.T) {
++	t.Setenv("TS_USE_CACHED_NETMAP", "1")
++	ForceCacheNetworkMaps = true
++	t.Cleanup(func() { ForceCacheNetworkMaps = false; NetworkMapCacheOff.Store(false) })
++
++	clb, testMap, cacheDir := newOpenRouteCacheTest(t)
++	clb.mu.Lock()
++	clb.setNetMapLocked(testMap)
++	clb.mu.Unlock()
++	if countFiles(t, cacheDir) == 0 {
++		t.Fatal("netmap not cached")
++	}
++
++	NetworkMapCacheOff.Store(true)
++	if loadCached(clb) {
++		t.Fatal("cache loaded while turned off")
++	}
++	if n := countFiles(t, cacheDir); n != 0 {
++		t.Fatalf("cache has %d entries while turned off, want 0", n)
++	}
++	clb.mu.Lock()
++	clb.setNetMapLocked(testMap)
++	clb.mu.Unlock()
++	if n := countFiles(t, cacheDir); n != 0 {
++		t.Fatalf("cache written while turned off: %d entries", n)
++	}
++}
++
++// xorStore is a toy NetmapCacheStoreHook wrapper that obscures values.
++type xorStore struct{ inner netmapcache.Store }
++
++func xor(b []byte) []byte {
++	out := make([]byte, len(b))
++	for i, c := range b {
++		out[i] = c ^ 0x5a
++	}
++	return out
++}
++
++func (s xorStore) List(ctx context.Context, prefix string) iter.Seq2[string, error] {
++	return s.inner.List(ctx, prefix)
++}
++
++func (s xorStore) Remove(ctx context.Context, key string) error { return s.inner.Remove(ctx, key) }
++
++func (s xorStore) Load(ctx context.Context, key string) ([]byte, error) {
++	b, err := s.inner.Load(ctx, key)
++	return xor(b), err
++}
++
++func (s xorStore) Store(ctx context.Context, key string, value []byte) error {
++	return s.inner.Store(ctx, key, xor(value))
++}
++
++// TestNetmapCacheStoreHook checks that the cache reads and writes through
++// NetmapCacheStoreHook.
++func TestNetmapCacheStoreHook(t *testing.T) {
++	t.Setenv("TS_USE_CACHED_NETMAP", "1")
++	ForceCacheNetworkMaps = true
++	NetmapCacheStoreHook = func(s netmapcache.Store) netmapcache.Store { return xorStore{s} }
++	t.Cleanup(func() { ForceCacheNetworkMaps = false; NetmapCacheStoreHook = nil })
++
++	clb, testMap, cacheDir := newOpenRouteCacheTest(t)
++	clb.mu.Lock()
++	clb.setNetMapLocked(testMap)
++	clb.mu.Unlock()
++
++	des, err := os.ReadDir(cacheDir)
++	if err != nil || len(des) == 0 {
++		t.Fatalf("no cache files: %v", err)
++	}
++	for _, de := range des {
++		b, err := os.ReadFile(filepath.Join(cacheDir, de.Name()))
++		if err != nil {
++			t.Fatal(err)
++		}
++		if bytes.Contains(b, []byte("phone.example.ts.net")) {
++			t.Fatalf("cache file %s holds plaintext", de.Name())
++		}
++	}
++
++	clb.mu.Lock()
++	clb.diskCache = diskCache{}
++	nm, ok := clb.loadDiskCacheLocked()
++	clb.mu.Unlock()
++	if !ok || nm.SelfNode.Name() != "phone.example.ts.net" {
++		t.Fatalf("load through hook: ok=%v", ok)
++	}
++}
++

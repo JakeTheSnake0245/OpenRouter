@@ -23,6 +23,14 @@ Get the signed APK from [Releases](../../releases/latest) and sideload it
 (Android 8+; arm64, arm, x86 and x86_64 in one APK). Updates install over the
 top as long as they come from this repo's releases (same signing key).
 
+Before installing on a new phone, check the download against the SHA-256 in
+the release notes, and the signing certificate against this fingerprint
+(`apksigner verify --print-certs OpenRoute-<version>.apk`):
+
+```
+a6b6ef03e61ff7d06a11386dc685e793a1c5aba6a2f9f926dd5bfe63441c990a
+```
+
 Upstream Tailscale's README is kept as [README-tailscale.md](README-tailscale.md).
 
 ## How it works
@@ -56,13 +64,45 @@ Upstream Tailscale's README is kept as [README-tailscale.md](README-tailscale.md
   covers the destination.
 - **Offline field start.** OpenRoute keeps the last tailnet map on disk
   (Tailscale's netmap cache, which Headscale doesn't switch on, so OpenRoute
-  forces it; a control-server `disable-cache-network-maps` attribute still
-  turns it off). Starting with no internet — radio only — the app comes up
+  forces it). Starting with no internet — radio only — the app comes up
   from that map: the VPN starts, mesh routing works, and tailnet peers that
   are also on the mesh stay reachable directly. The Tailnet tile shows
   "Server offline" until Headscale is reachable again. With no cached map
   (first run), the VPN still comes up with a placeholder address (192.0.0.8)
-  once started, so mesh routing works.
+  once started, so mesh routing works. Safeguards:
+  - The map is encrypted with AES-256-GCM under a key kept in the app's
+    Keystore-backed encrypted preferences (`libtailscale/netmapcrypt.go`).
+  - It is only used for **72 hours** after Headscale last sent an update, so a
+    device removed on the server (say, a lost phone) drops off even phones
+    that restart offline within that time.
+  - Mesh → **Offline tailnet map** turns it off (and deletes it) per phone,
+    and **Wipe saved map** deletes it now. A control-server
+    `disable-cache-network-maps` attribute also turns it off.
+
+## Security
+
+- **Tailnet traffic never goes to the mesh unencrypted.** Tailscale's range
+  (100.64.0.0/10, including MagicDNS at 100.100.100.100) is never diverted
+  to the radio, and mesh subnets that overlap it, or are wider than /8, are
+  refused.
+- **The radio can't choose what gets routed to it.** In auto mode the link's
+  subnet is routed only where it falls inside the configured **mesh ranges**
+  (default `10.41.0.0/16`); a radio or network handing out anything else is
+  shown as an error and not routed.
+- **Wi-Fi network mode adopts a network only by name** (or, while Android
+  hides the name in the background, by matching the subnet it had last time,
+  inside the mesh ranges). Android only reveals Wi-Fi names with location
+  permission and location turned on. Radio hotspot mode (name + password)
+  or USB ethernet are stronger.
+- **No logs go to Tailscale.** Remote diagnostic logging is off by default
+  (Settings can turn it on). The radio hotspot password is stored encrypted.
+- **Other apps can't control the VPN.** The connect/disconnect/exit-node
+  intents require a signature permission, so only apps signed with the
+  OpenRoute key can use them.
+- Headscale's DERP map decides which relay servers carry traffic when a
+  direct path isn't possible; to keep relayed (still encrypted) traffic off
+  Tailscale's public DERP servers, run Headscale's embedded DERP and drop
+  the default map.
 
 Exit-node controls are hidden (use the standalone Tailscale app for exit
 nodes) unless an MDM policy explicitly shows them.
@@ -133,6 +173,9 @@ Bump `openRouteVersion` in `android/build.gradle.kts` for each release.
 - [ ] Airplane mode + radio only, reboot: mesh routing still comes up; the
       Tailnet tile shows "Server offline"; turning internet back on returns it
       to "Secure".
+- [ ] A network whose subnet is outside the mesh ranges (e.g. a phone
+      hotspot in Wi-Fi network mode) is shown as "outside the mesh ranges"
+      and nothing is routed to it.
 
 ## Known limits
 

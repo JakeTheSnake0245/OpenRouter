@@ -98,7 +98,7 @@ fun MeshView(onBack: () -> Unit) {
   }
   var wifiSsid by remember { mutableStateOf(prefs.getString(MeshRouter.KEY_WIFI_SSID, "")!!) }
   var hotspotSsid by remember { mutableStateOf(prefs.getString(MeshRouter.KEY_HOTSPOT_SSID, "")!!) }
-  var hotspotPass by remember { mutableStateOf(prefs.getString(MeshRouter.KEY_HOTSPOT_PASS, "")!!) }
+  var hotspotPass by remember { mutableStateOf(MeshRouter.hotspotPassword(context)) }
   var hotspotSec by remember {
     mutableStateOf(prefs.getString(MeshRouter.KEY_HOTSPOT_SEC, "wpa2")!!)
   }
@@ -109,9 +109,12 @@ fun MeshView(onBack: () -> Unit) {
   var meshHost by remember { mutableStateOf(prefs.getString(MeshRouter.KEY_MESH_HOST, "")!!) }
   var watchdog by remember { mutableStateOf(prefs.getBoolean(MeshRouter.KEY_WATCHDOG, false)) }
   var rescue by remember { mutableStateOf(prefs.getBoolean(MeshRouter.KEY_RESCUE, true)) }
+  var offlineMap by remember { mutableStateOf(MeshRouter.offlineMapEnabled(context)) }
+  var offlineMapWiped by remember { mutableStateOf(false) }
 
   var counters by remember { mutableStateOf(MeshRouter.Counters()) }
   LaunchedEffect(Unit) {
+    MeshRouter.recheckWifi()
     while (true) {
       counters = MeshRouter.counters()
       delay(1000)
@@ -291,9 +294,9 @@ fun MeshView(onBack: () -> Unit) {
               }
               Button(
                   onClick = {
+                    MeshRouter.setHotspotPassword(context, hotspotPass)
                     save {
                       putString(MeshRouter.KEY_HOTSPOT_SSID, hotspotSsid.trim())
-                      putString(MeshRouter.KEY_HOTSPOT_PASS, hotspotPass)
                       putString(MeshRouter.KEY_HOTSPOT_SEC, hotspotSec)
                     }
                   }
@@ -317,116 +320,71 @@ fun MeshView(onBack: () -> Unit) {
               save { putBoolean(MeshRouter.KEY_AUTO_SUBNET, it) }
             },
         )
-        if (!autoSubnet) {
-          val valid = cidrs.split(',').all { MeshRouter.normalizeCidr(it.trim()) != null }
-          FieldRow {
-            OutlinedTextField(
-                value = cidrs,
-                onValueChange = { cidrs = it },
-                label = { Text(stringResource(R.string.mesh_cidrs)) },
-                isError = !valid,
-                singleLine = true,
-                modifier = Modifier.weight(1f),
-            )
-          }
-          ButtonRow {
-            Button(
-                enabled = valid,
-                onClick = {
-                  cidrs = MeshRouter.parseCidrs(cidrs).joinToString(", ")
-                  save { putString(MeshRouter.KEY_CIDRS, cidrs) }
-                },
-            ) {
-              Text(stringResource(R.string.save))
+        val problems =
+            cidrs.split(',').map { it.trim() }.filter { it.isNotEmpty() }.mapNotNull { c ->
+              val norm = MeshRouter.normalizeCidr(c) ?: return@mapNotNull "$c: not a CIDR"
+              MeshRouter.unsafeReason(norm)?.let { "$c: $it" }
             }
+        val valid = problems.isEmpty() && MeshRouter.parseCidrs(cidrs).isNotEmpty()
+        FieldRow {
+          OutlinedTextField(
+              value = cidrs,
+              onValueChange = { cidrs = it },
+              label = {
+                Text(
+                    stringResource(
+                        if (autoSubnet) R.string.mesh_ranges_auto else R.string.mesh_cidrs
+                    )
+                )
+              },
+              supportingText = problems.firstOrNull()?.let { { Text(it) } },
+              isError = !valid,
+              singleLine = true,
+              modifier = Modifier.weight(1f),
+          )
+        }
+        ButtonRow {
+          Button(
+              enabled = valid,
+              onClick = {
+                cidrs = MeshRouter.parseCidrs(cidrs).joinToString(", ")
+                save { putString(MeshRouter.KEY_CIDRS, cidrs) }
+              },
+          ) {
+            Text(stringResource(R.string.save))
           }
         }
       }
 
-      item("host") {
+      item("offlineMap") {
         Lists.SectionDivider()
-        Lists.MutedHeader(stringResource(R.string.mesh_host_header))
-        FieldRow {
-          OutlinedTextField(
-              value = meshHost,
-              onValueChange = {
-                meshHost = it
-                prefs.edit().putString(MeshRouter.KEY_MESH_HOST, it.trim()).apply()
-              },
-              label = { Text(stringResource(R.string.mesh_host_hint)) },
-              singleLine = true,
-              keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-              modifier = Modifier.weight(1f),
-          )
-        }
+        Lists.MutedHeader(stringResource(R.string.mesh_offline_map_header))
         Setting.Switch(
-            R.string.mesh_watchdog,
-            isOn = watchdog,
+            R.string.mesh_offline_map,
+            subtitle = stringResource(R.string.mesh_offline_map_subtitle),
+            isOn = offlineMap,
             onToggle = {
-              watchdog = it
-              prefs.edit().putBoolean(MeshRouter.KEY_WATCHDOG, it).apply()
+              offlineMap = it
+              MeshRouter.setOfflineMapEnabled(context, it)
             },
         )
         ButtonRow {
           OutlinedButton(
-              enabled = testJob?.isActive != true,
               onClick = {
-                testLines.clear()
-                testJob = scope.launch { MeshProbe.testMesh(meshHost.trim()) { testLines.add(it) } }
-              },
-          ) {
-            Text(stringResource(R.string.mesh_test))
-          }
-          OutlinedButton(
-              onClick = {
-                if (scanJob?.isActive == true) {
-                  scanJob?.cancel()
-                  return@OutlinedButton
-                }
-                devices = null
-                scanProgress = ""
-                scanJob = scope.launch {
-                  val found =
-                      MeshProbe.discover(
-                          onProgress = { done, total, n ->
-                            scanProgress = "scanned $done / $total · $n found"
-                          },
-                          onFound = {},
-                      )
-                  devices = found
-                }
+                MeshRouter.wipeOfflineMap()
+                offlineMapWiped = true
               }
           ) {
-            Text(
-                stringResource(
-                    if (scanJob?.isActive == true) R.string.mesh_cancel_scan
-                    else R.string.mesh_find_devices
-                )
-            )
+            Text(stringResource(R.string.mesh_offline_map_wipe))
           }
         }
-        if (scanProgress.isNotEmpty()) {
+        if (offlineMapWiped) {
           Text(
-              scanProgress,
+              stringResource(R.string.mesh_offline_map_wiped),
               style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
               modifier = Modifier.padding(horizontal = 16.dp),
           )
-        }
-        if (testLines.isNotEmpty()) {
-          Card(
-              colors = CardDefaults.cardColors(),
-              modifier = Modifier.fillMaxWidth().padding(16.dp),
-          ) {
-            Column(Modifier.padding(12.dp)) {
-              for (line in testLines) {
-                Text(
-                    line,
-                    fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-              }
-            }
-          }
         }
       }
 

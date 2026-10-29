@@ -11,6 +11,13 @@
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <!-- OpenRoute: mesh Wi-Fi modes (reading the SSID and scanning for radio hotspots). -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+
+    <!-- OpenRoute: only apps signed with the OpenRoute key may connect, disconnect or pick an
+         exit node through IPNReceiver. -->
+    <permission
+        android:name="com.openmanet.openroute.permission.CONTROL_VPN"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="com.openmanet.openroute.permission.CONTROL_VPN" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -104,7 +111,8 @@
 
         <receiver
             android:name="IPNReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="com.openmanet.openroute.permission.CONTROL_VPN">
             <intent-filter>
                 <action android:name="com.tailscale.ipn.CONNECT_VPN" />
                 <action android:name="com.tailscale.ipn.DISCONNECT_VPN" />
