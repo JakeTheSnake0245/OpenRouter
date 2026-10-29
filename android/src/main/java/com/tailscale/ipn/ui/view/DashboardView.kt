@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tailscale.ipn.R
 import com.tailscale.ipn.mesh.MeshRouter
+import com.tailscale.ipn.ui.model.Ipn
 import com.tailscale.ipn.ui.viewModel.MainViewModel
 
 /**
@@ -57,6 +58,8 @@ fun OpsDashboard(
 ) {
   val netmap by viewModel.netmap.collectAsState()
   val mesh by MeshRouter.status.collectAsState()
+  val state by viewModel.ipnState.collectAsState()
+  val reachingServer = state != Ipn.State.Running
 
   Column(
       modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -68,9 +71,11 @@ fun OpsDashboard(
     val online = peers.count { it.Online == true }
     StatusTile(
         label = stringResource(R.string.dash_tailnet),
-        value = stringResource(R.string.dash_secure),
-        detail = stringResource(R.string.dash_devices_online, online, peers.size),
-        color = statusGreen,
+        value = stringResource(if (reachingServer) R.string.dash_offline else R.string.dash_secure),
+        detail =
+            if (reachingServer) stringResource(R.string.dash_last_known, peers.size)
+            else stringResource(R.string.dash_devices_online, online, peers.size),
+        color = if (reachingServer) statusAmber else statusGreen,
         onClick = onNavigateToDevices,
     )
 
@@ -105,6 +110,7 @@ fun OpsDashboard(
         detail =
             when {
               mesh.rescueActive -> stringResource(R.string.dash_rescue_active)
+              mesh.internet == "none" -> stringResource(R.string.dash_no_internet)
               internetDown -> mesh.internet.replaceFirstChar { it.uppercase() }
               else -> stringResource(R.string.dash_internet_direct)
             },

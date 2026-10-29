@@ -1,0 +1,166 @@
+--- a/ipn/ipnlocal/local.go
++++ b/ipn/ipnlocal/local.go
+@@ -2659,7 +2659,7 @@
+ 	// Note we do this AFTER the updates are applied in the nodeBackend, so that
+ 	// we can get its updated views to put back into the cache.
+ 	if buildfeatures.HasCacheNetMap &&
+-		cn.SelfHasCap(nodecap.CacheNetworkMaps) &&
++		cacheNetworkMapsEnabled(cn) &&
+ 		envknob.BoolDefaultTrue("TS_USE_CACHED_NETMAP") {
+ 
+ 		var peersToUpdate []tailcfg.NodeView
+@@ -7632,7 +7632,7 @@
+ 	// not being updated (because of the envknob) and could be read back when
+ 	// the node starts up.
+ 	if nm != nil {
+-		if b.currentNode().SelfHasCap(nodecap.CacheNetworkMaps) && envknob.BoolDefaultTrue("TS_USE_CACHED_NETMAP") {
++		if cacheNetworkMapsEnabled(b.currentNode()) && envknob.BoolDefaultTrue("TS_USE_CACHED_NETMAP") {
+ 			if err := b.writeNetmapToDiskLockedWithPeers(nm); err != nil {
+ 				b.logf("write netmap to cache: %v", err)
+ 			}
+--- a/ipn/ipnlocal/diskcache.go
++++ b/ipn/ipnlocal/diskcache.go
+@@ -11,6 +11,7 @@
+ 	"tailscale.com/feature/buildfeatures"
+ 	"tailscale.com/ipn/ipnlocal/netmapcache"
+ 	"tailscale.com/tailcfg"
++	"tailscale.com/tailcfg/nodecap"
+ 	"tailscale.com/types/netmap"
+ )
+ 
+@@ -84,6 +85,21 @@
+ 	return nil
+ }
+ 
++// ForceCacheNetworkMaps, if set, caches network maps on disk even when the
++// control plane doesn't grant [nodecap.CacheNetworkMaps] (Headscale doesn't),
++// so the node can start from its last-known tailnet while offline.
++// [nodecap.DisableCacheNetworkMaps] still turns caching off.
++var ForceCacheNetworkMaps bool
++
++// cacheNetworkMapsEnabled reports whether network maps for cn should be
++// cached on disk.
++func cacheNetworkMapsEnabled(cn *nodeBackend) bool {
++	if cn.SelfHasCap(nodecap.DisableCacheNetworkMaps) {
++		return false
++	}
++	return ForceCacheNetworkMaps || cn.SelfHasCap(nodecap.CacheNetworkMaps)
++}
++
+ func (b *LocalBackend) loadDiskCacheLocked() (om *netmap.NetworkMap, ok bool) {
+ 	if !buildfeatures.HasCacheNetMap {
+ 		return nil, false
+--- /dev/null
++++ b/ipn/ipnlocal/openroute_test.go
+@@ -0,0 +1,111 @@
++// Copyright (c) Tailscale Inc & AUTHORS
++// SPDX-License-Identifier: BSD-3-Clause
++
++package ipnlocal
++
++import (
++	"net/netip"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"tailscale.com/health"
++	"tailscale.com/ipn"
++	"tailscale.com/ipn/store/mem"
++	"tailscale.com/tailcfg"
++	"tailscale.com/tailcfg/nodecap"
++	"tailscale.com/tsd"
++	"tailscale.com/tstest"
++	"tailscale.com/types/logger"
++	"tailscale.com/types/logid"
++	"tailscale.com/types/netmap"
++	"tailscale.com/util/must"
++	"tailscale.com/util/set"
++	"tailscale.com/wgengine"
++)
++
++// TestForceCacheNetworkMaps checks OpenRoute's override: with
++// ForceCacheNetworkMaps set, the netmap is cached without the control plane
++// granting the capability, and DisableCacheNetworkMaps still wins.
++func TestForceCacheNetworkMaps(t *testing.T) {
++	t.Setenv("TS_USE_CACHED_NETMAP", "1")
++	ForceCacheNetworkMaps = true
++	t.Cleanup(func() { ForceCacheNetworkMaps = false })
++
++	varRoot := t.TempDir()
++	cacheDir := filepath.Join(varRoot, "profile-data", "id0", "netmap-cache")
++
++	testMap := &netmap.NetworkMap{
++		SelfNode: (&tailcfg.Node{
++			Name:      "phone.example.ts.net",
++			User:      tailcfg.UserID(1),
++			Addresses: []netip.Prefix{netip.MustParsePrefix("100.2.3.4/32")},
++		}).View(),
++		UserProfiles: map[tailcfg.UserID]tailcfg.UserProfileView{
++			tailcfg.UserID(1): (&tailcfg.UserProfile{ID: 1, LoginName: "user@example.com"}).View(),
++		},
++		Peers: []tailcfg.NodeView{
++			(&tailcfg.Node{
++				ID:        601,
++				StableID:  "n601FAKE",
++				User:      tailcfg.UserID(1),
++				Key:       makeNodeKeyFromID(601),
++				Addresses: []netip.Prefix{netip.MustParsePrefix("100.2.3.5/32")},
++			}).View(),
++		},
++	}
++
++	sys := tsd.NewSystem()
++	e, err := wgengine.NewFakeUserspaceEngine(logger.Discard,
++		sys.Set,
++		sys.HealthTracker.Get(),
++		sys.UserMetricsRegistry(),
++		sys.Bus.Get(),
++	)
++	if err != nil {
++		t.Fatalf("Make userspace engine: %v", err)
++	}
++	t.Cleanup(e.Close)
++	sys.Set(e)
++	sys.Set(new(mem.Store))
++
++	logf := tstest.WhileTestRunningLogger(t)
++	clb, err := NewLocalBackend(logf, logid.PublicID{}, sys, 0)
++	if err != nil {
++		t.Fatalf("Make local backend: %v", err)
++	}
++	t.Cleanup(clb.Shutdown)
++	clb.SetVarRoot(varRoot)
++
++	pm := must.Get(newProfileManager(new(mem.Store), logf, health.NewTracker(sys.Bus.Get())))
++	pm.currentProfile = (&ipn.LoginProfile{ID: "id0"}).View()
++	clb.pm = pm
++	if err := clb.Start(ipn.Options{}); err != nil {
++		t.Fatalf("Start local backend: %v", err)
++	}
++
++	cacheEntries := func() int {
++		des, err := os.ReadDir(cacheDir)
++		if err != nil && !os.IsNotExist(err) {
++			t.Fatalf("List cache directory: %v", err)
++		}
++		return len(des)
++	}
++
++	// No capability from control: cached anyway.
++	clb.mu.Lock()
++	clb.setNetMapLocked(testMap)
++	clb.mu.Unlock()
++	if cacheEntries() == 0 {
++		t.Fatal("netmap not cached with ForceCacheNetworkMaps set")
++	}
++
++	// Control explicitly disables caching: the cache is discarded.
++	testMap.AllCaps = set.Of(nodecap.DisableCacheNetworkMaps)
++	clb.mu.Lock()
++	clb.setNetMapLocked(testMap)
++	clb.mu.Unlock()
++	if n := cacheEntries(); n != 0 {
++		t.Fatalf("cache has %d entries after DisableCacheNetworkMaps, want 0", n)
++	}
++}

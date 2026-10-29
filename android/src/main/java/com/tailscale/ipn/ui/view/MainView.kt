@@ -249,8 +249,22 @@ fun MainView(
                 onNavigateToMesh = navigation.onNavigateToMesh,
             )
           }
-          Ipn.State.NoState,
-          Ipn.State.Starting -> StartingView()
+          // OpenRoute: offline (e.g. radio only), the backend starts from its cached tailnet
+          // map and stays in Starting until it reaches the server. Show the dashboard and
+          // bring the VPN up so mesh routing works meanwhile.
+          Ipn.State.Starting ->
+              if (netmap != null) {
+                viewModel.maybeRequestVpnPermission()
+                LaunchVpnPermissionIfNeeded(viewModel)
+                OpsDashboard(
+                    viewModel = viewModel,
+                    onNavigateToDevices = navigation.onNavigateToDevices,
+                    onNavigateToMesh = navigation.onNavigateToMesh,
+                )
+              } else {
+                StartingView()
+              }
+          Ipn.State.NoState -> StartingView()
           else -> {
             ConnectView(
                 state,

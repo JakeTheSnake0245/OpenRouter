@@ -456,6 +456,8 @@
     <string name="dash_links">Status</string>
     <string name="dash_tailnet">Tailnet</string>
     <string name="dash_secure">Secure</string>
+    <string name="dash_offline">Server offline</string>
+    <string name="dash_last_known">Last-known map · %1$d devices · reconnecting</string>
     <string name="dash_devices_online">%1$d of %2$d devices online</string>
     <string name="dash_devices_title">Devices</string>
     <string name="dash_mesh">Mesh</string>
@@ -467,6 +469,7 @@
     <string name="dash_internet">Internet</string>
     <string name="dash_device_default">Default</string>
     <string name="dash_down">Down</string>
+    <string name="dash_no_internet">No Wi-Fi or cellular connection</string>
     <string name="dash_rescue_active">Carrying app traffic around the radio</string>
     <string name="dash_internet_direct">Tailnet and apps use it directly</string>
     <string name="dash_show_addresses">Show</string>

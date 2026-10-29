@@ -54,9 +54,15 @@ Upstream Tailscale's README is kept as [README-tailscale.md](README-tailscale.md
   internet, OpenRoute routes the IPv4 internet through the VPN and relays it
   over cellular. It steps aside when a tailnet route (including an exit node)
   covers the destination.
-- **Offline field start.** If Tailscale has no addresses yet (no internet at
-  boot), the VPN still comes up with a placeholder address (192.0.0.8) so mesh
-  routing works.
+- **Offline field start.** OpenRoute keeps the last tailnet map on disk
+  (Tailscale's netmap cache, which Headscale doesn't switch on, so OpenRoute
+  forces it; a control-server `disable-cache-network-maps` attribute still
+  turns it off). Starting with no internet — radio only — the app comes up
+  from that map: the VPN starts, mesh routing works, and tailnet peers that
+  are also on the mesh stay reachable directly. The Tailnet tile shows
+  "Server offline" until Headscale is reachable again. With no cached map
+  (first run), the VPN still comes up with a placeholder address (192.0.0.8)
+  once started, so mesh routing works.
 
 Exit-node controls are hidden (use the standalone Tailscale app for exit
 nodes) unless an MDM policy explicitly shows them.
@@ -124,7 +130,9 @@ Bump `openRouteVersion` in `android/build.gradle.kts` for each release.
       cellular with "Keep internet on cellular" on; Mesh status shows
       "Cellular (rescue)" and the Internet tile says it's carrying app traffic.
 - [ ] Unplug the radio: routes drop within a few seconds; replug: they return.
-- [ ] Airplane mode + radio only, reboot: mesh routing still comes up.
+- [ ] Airplane mode + radio only, reboot: mesh routing still comes up; the
+      Tailnet tile shows "Server offline"; turning internet back on returns it
+      to "Secure".
 
 ## Known limits
 

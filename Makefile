@@ -23,9 +23,10 @@ export TS_USE_TOOLCHAIN=1
 # If set, additional comma-separated build tags passed to the libtailscale Go
 # build to control feature selection.
 #
-# As of 2026-04-15, we disable netmap caching on Android until we have UI
-# affordances for debugging it.
-GOMOBILE_BUILD_TAGS := ts_omit_cachenetmap
+# As of 2026-04-15, upstream disables netmap caching on Android until it has UI
+# affordances for debugging it. OpenRoute turns it on: the cached netmap is what
+# lets the VPN and mesh routing start with no internet (radio only).
+GOMOBILE_BUILD_TAGS :=
 
 # Pull androidApiLevel from gradle.properties.
 ANDROID_API_LEVEL := $(shell grep '^androidApiLevel=' android/gradle.properties | cut -d'=' -f2)
