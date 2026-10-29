@@ -67,39 +67,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private val statusGreen = Color(0xFF3FB950)
-private val statusAmber = Color(0xFFD29922)
-private val statusRed = Color(0xFFE5534B)
-private val statusGrey = Color(0xFF8B949E)
+internal val statusGreen = Color(0xFF3FB950)
+internal val statusAmber = Color(0xFFD29922)
+internal val statusRed = Color(0xFFE5534B)
+internal val statusGrey = Color(0xFF8B949E)
 
-/** Compact mesh status for the top of the main screen; tapping it opens [MeshView]. */
-@Composable
-fun MeshStatusCard(onClick: () -> Unit) {
-  val status by MeshRouter.status.collectAsState()
-  ListItem(
-      modifier = Modifier.clickable(onClick = onClick),
-      leadingContent = { StatusDot(meshColor(status)) },
-      headlineContent = {
-        Text(
-            if (status.routes.isNotEmpty())
-                stringResource(R.string.mesh_card_routing, status.routes.joinToString())
-            else stringResource(R.string.mesh_card_title)
-        )
-      },
-      supportingContent = {
-        Text(
-            buildString {
-              append(status.linkDetail)
-              if (status.rescueActive) append(" · ").append(status.internet)
-            },
-            style = MaterialTheme.typography.bodySmall,
-        )
-      },
-  )
-  Lists.ItemDivider()
-}
-
-private fun meshColor(s: MeshRouter.Status) =
+internal fun meshColor(s: MeshRouter.Status) =
     when {
       !s.enabled -> statusGrey
       s.routes.isNotEmpty() && s.meshHostAlive != false -> statusGreen
@@ -545,7 +518,7 @@ fun MeshView(onBack: () -> Unit) {
 }
 
 @Composable
-private fun linkModeLabel(mode: LinkMode) =
+internal fun linkModeLabel(mode: LinkMode) =
     stringResource(
         when (mode) {
           LinkMode.ETHERNET -> R.string.mesh_link_ethernet

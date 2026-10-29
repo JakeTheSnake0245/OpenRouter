@@ -68,6 +68,7 @@ import com.tailscale.ipn.ui.util.universalFit
 import com.tailscale.ipn.ui.view.AboutView
 import com.tailscale.ipn.ui.view.BugReportView
 import com.tailscale.ipn.ui.view.DNSSettingsView
+import com.tailscale.ipn.ui.view.DevicesView
 import com.tailscale.ipn.ui.view.ExitNodePicker
 import com.tailscale.ipn.ui.view.HealthView
 import com.tailscale.ipn.ui.view.IntroView
@@ -336,6 +337,7 @@ class MainActivity : ComponentActivity() {
                       onNavigateToCustomControl = {
                         navController.navigate("loginWithCustomControl")
                       },
+                      onNavigateToDevices = { navController.navigate("devices") },
                   )
               val settingsNav =
                   SettingsNav(
@@ -396,6 +398,14 @@ class MainActivity : ComponentActivity() {
               composable("exitNodes") { ExitNodePicker(exitNodePickerNav) }
               composable("health") { HealthView(backTo("main")) }
               composable("mesh") { MeshView(backTo("main")) }
+              composable("devices") {
+                DevicesView(
+                    viewModel = viewModel,
+                    onNavigateToPeerDetails = mainViewNav.onNavigateToPeerDetails,
+                    onNavigateToSearch = mainViewNav.onNavigateToSearch,
+                    onBack = backTo("main"),
+                )
+              }
               composable("mullvad") { MullvadExitNodePickerList(exitNodePickerNav) }
               composable("mullvad_info") { MullvadInfoView(exitNodePickerNav) }
               composable(

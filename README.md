@@ -1,182 +1,138 @@
-# Tailscale Android Client
+# OpenRoute
 
-https://tailscale.com
+OpenRoute is the Tailscale Android client with MeshRoute's split-tunnel mesh
+routing built in, for phones that join an OpenMANET (or other WAN-less MANET)
+radio while keeping cellular/Wi-Fi for the internet.
 
-Private WireGuard® networks made easy
+Android allows only one VPN at a time, so MeshRoute and Tailscale could not
+run together. OpenRoute is one VPN that carries both:
 
-## Overview
+| Traffic | Goes |
+|---|---|
+| Tailnet (100.64.0.0/10, subnet routes, MagicDNS) | WireGuard, via your Headscale tailnet |
+| Mesh subnet (auto-detected, e.g. OpenMANET `10.41.0.0/16`) | Out the radio link (USB-C ethernet or Wi-Fi) |
+| Everything else | Untouched — cellular or Wi-Fi as usual |
+| Tailnet peers that are also on the mesh | Directly over the radio (Tailscale-over-mesh) |
 
-This repository contains the open source Tailscale Android client.
+It installs as its own app (`com.openmanet.openroute`) next to the stock
+Tailscale app, and replaces MeshRoute.
 
-## Using
+## Download
 
-#### Tailscale Packages
+Get the signed APK from [Releases](../../releases/latest) and sideload it
+(Android 8+; arm64, arm, x86 and x86_64 in one APK). Updates install over the
+top as long as they come from this repo's releases (same signing key).
 
-The latest stable release APK can be obtained from the [Tailscale Packages Stable Track](https://pkgs.tailscale.com/stable/#android).
+Upstream Tailscale's README is kept as [README-tailscale.md](README-tailscale.md).
 
-Unstable releases can be obtained from the [Tailscale Packages Unstable Track](https://pkgs.tailscale.com/unstable/#android).
+## How it works
 
-These APKs include all supported platforms and architectures.  For installing compact APKs, Android TV, or if you want automatic updates, visit the [Google Play Store](https://play.google.com/store/apps/details?id=com.tailscale.ipn).
+- **Mesh routing** (`libtailscale/meshroute`). While a mesh link is up, its
+  subnets are added to the VPN routes. Packets for them are pulled out of the
+  TUN before WireGuard sees them (`meshroute.TUN`) and handed to a gVisor
+  userspace stack that terminates each TCP/UDP flow and relays it over a
+  socket bound to the mesh `Network` (`stack.go`). Pings use an unprivileged
+  ICMP socket bound to the mesh (`ping_linux.go`). This replaces MeshRoute's
+  hand-written TCP/UDP/ICMP relays.
+- **Tailscale over the mesh** (`meshroute/conn.go`). magicsock's UDP socket is
+  bound to the internet network, so it can't reach peers' mesh addresses.
+  While the mesh is up, it is paired with a second socket bound to the mesh;
+  writes to mesh addresses use it and reads come from both. The phone's mesh
+  address is advertised as a local endpoint, so peers on the radio find each
+  other through disco like on a LAN. This needs one small patch to
+  `tailscale.com` (`patches/tailscale.com/`), applied at build time by
+  `scripts/prepare-tailscale-fork.sh` into `third_party/` (via the `replace`
+  in `go.mod`).
+- **Link detection** (`android/.../mesh/MeshRouter.kt`) is a port of
+  MeshRoute's: Ethernet, a designated Wi-Fi network (for static-IP radios),
+  or a radio hotspot the app joins itself as a local-only network.
+- **Internet rescue** ("Keep internet on cellular" switch, on by default).
+  Tailscale's own traffic always uses the best validated internet network, so
+  TAK, Predator RF, and admin panels over the tailnet keep working even if the
+  radio takes over Android's default network. The switch only matters for
+  other apps: when the mesh link holds the default network without working
+  internet, OpenRoute routes the IPv4 internet through the VPN and relays it
+  over cellular. It steps aside when a tailnet route (including an exit node)
+  covers the destination.
+- **Offline field start.** If Tailscale has no addresses yet (no internet at
+  boot), the VPN still comes up with a placeholder address (192.0.0.8) so mesh
+  routing works.
 
-#### Google Playstore
+Exit-node controls are hidden (use the standalone Tailscale app for exit
+nodes) unless an MDM policy explicitly shows them.
 
-[<img src="https://play.google.com/intl/en_us/badges/images/generic/en-play-badge.png"
-     alt="Get it on Google Play"
-     height="80">](https://play.google.com/store/apps/details?id=com.tailscale.ipn)
+## Main screen
 
-Help us test new features and bug-fixes before they ship to all users! A [beta testing track](https://play.google.com/apps/testing/com.tailscale.ipn) is available on the Play Store. 
+The main screen is a status board with one tile per link: **Tailnet**
+(secure / devices online), **Mesh** (linked, no link, degraded) and
+**Internet** (which network apps are using, and whether rescue is carrying
+them). Tap a tile for details.
 
-#### Amazon Appstore
+Other tailnet devices aren't listed on the main screen, and the control
+server's hostname isn't shown there either. The device list is behind the
+Tailnet tile and shows names and online state only. A device's addresses are
+masked on its details screen until you tap **Show**; tapping a row copies
+the real address either way.
 
-The app can be downloaded from the [Amazon Appstore](https://www.amazon.com/dp/B0D38TRB3N) for Amazon Fire tablets and Fire TV devices.
+## Using it
 
-#### F-Droid
-
-The [F-Droid](https://f-droid.org/packages/com.tailscale.ipn/) project builds the source code in this repository and maintains independently-built APKs. Note that F-Droid builds are not released, updated, or verified by the Tailscale team.
-
-## Preparing a build environment
-
-There are several options for setting up a build environment. The Android Studio
-path is the most useful path for longer term development.
-
-In all cases you will need:
-
-- Go runtime
-- Android SDK
-- Android SDK components (`make androidsdk` will install them)
-
-### Android Studio
-
-1. Install a Go runtime (https://go.dev/dl/).
-2. Install Android Studio (https://developer.android.com/studio).
-3. Start Android Studio, from the Welcome screen select "More Actions" and "SDK Manager".
-4. In the SDK manager, select the "SDK Tools" tab and install the "Android SDK Command-line Tools (latest)".
-3. Run `make androidsdk` to install the necessary SDK components.
-
-If you would prefer to avoid Android Studio, you can also install an Android
-SDK. The makefile detects common paths, so `sudo apt install android-sdk` is
-sufficient on Debian / Ubuntu systems. To use an Android SDK installed in a
-non-standard location, set the `ANDROID_SDK_ROOT` environment variable to the
-path to the SDK.
-
-If you installed Android Studio the tools may not be in your path. To get the
-correct tool path, run `make androidpath` and export the provided path in your
-shell.
-
-#### Code Formatting
-
-The ktmft plugin on the default setting should be used to autoformat all Java, Kotlin
-and XML files in Android Studio.  Enable "Format on Save".
-
-### Docker
-
-If you wish to avoid installing software on your host system, a Docker based development strategy is available, you can build and start a shell with:
-
-```sh
-make docker-shell
-```
-
-Several other makefile recipes are available for setting up the proper build environment and running builds.
-
-Note that the docker makefile recipes s will preserve the image and remove container on completion.
-If changes are made to the build environment or toolchain, cached docker images may need to be rebuilt.
-The docker build image name is parameterized in the makefile and changing it provides a simple means to do this.
-
-### Nix
-
-If you have Nix 2.4 or later installed, a Nix development environment can
-be set up with:
-
-```sh
-alias nix='nix --extra-experimental-features "nix-command flakes"'
-nix develop
-```
-
-The flake provides host tools such as Java, `make`, `curl`, and `git`, and
-points the build at a repo-local Android SDK in `./android-sdk`. The SDK
-directory is ignored by Git and is reused across builds.
-
-On first use, install the Android SDK components:
-
-```sh
-make androidsdk
-```
-
-Then build normally:
-
-```sh
-make tailscale-debug
-```
-
-The debug APK is written to `./tailscale-debug.apk`.
-
-For one-shot commands without entering an interactive shell:
-
-```sh
-nix develop --command make androidsdk
-nix develop --command make tailscale-debug
-```
-
-For faster Kotlin-only iteration while avoiding the `gomobile bind` step:
-
-```sh
-nix develop --command bash -lc 'cd android && ./gradlew ktfmtCheck compileDebugKotlin'
-```
+1. Install `OpenRoute-<version>.apk` (sideload).
+2. Tap **Use your organization's server**, enter the Headscale URL once, and
+   sign in through your SSO in the browser. (MDM can preset `LoginURL`.)
+3. Tap the **Mesh** tile on the main screen: choose the link mode, and
+   optionally a mesh host for the watchdog / Test mesh.
+4. Recommended: Android Settings → VPN → OpenRoute → **Always-on VPN**, and
+   battery usage **Unrestricted**.
 
 ## Building
 
+Requirements (installed by the setup used for 1.0.0): JDK 17
+(`brew install openjdk@17`), Android SDK platform 36, build-tools 36.0.0,
+NDK 23.1.7779620. The Go toolchain is fetched by `tool/go`.
+
 ```sh
-make apk
-make install
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home
+make openroute-apk          # signed release APK → OpenRoute-<version>.apk
+make apk                    # debug APK
+./tool/go test ./libtailscale/meshroute   # mesh routing tests (run on any OS)
 ```
 
-## Building a release
+`make openroute-apk` needs `android/keystore.properties` (not in git):
 
-Use `make tag_release` to stamp the Play Store version code, update the version
-name, and tag the current commit. The version code is derived from wall-clock
-time (minutes since the Unix epoch) at release time and committed into
-`android/build.gradle`, so it increases monotonically across all builds and
-branches while staying fixed for any given commit.
-
-We only guarantee to support the latest Go release and any Go beta or
-release candidate builds (currently Go 1.14) in module mode. It might
-work in earlier Go versions or in GOPATH mode, but we're making no
-effort to keep those working.
-
-## Developing on a Fire Stick TV
-
-On the Fire Stick:
-
-* Settings > My Fire TV > Developer Options > ADB Debugging > ON
-
-Then some useful commands:
 ```
-adb connect 10.2.200.213:5555
-adb install -r tailscale-fdroid.apk
-adb shell am start -n com.tailscale.ipn/com.tailscale.ipn.MainActivity
-adb shell pm uninstall com.tailscale.ipn
+storeFile=/path/to/openroute-release.jks
+storePassword=...
+keyAlias=openroute
+keyPassword=...
 ```
 
-## Bugs
+**Keep the keystore safe.** Phones only accept updates signed with the same
+key; if it's lost, every device has to uninstall and reinstall.
 
-Please file any issues about this code or the hosted service on
-[the tailscale issue tracker](https://github.com/tailscale/tailscale/issues).
+Bump `openRouteVersion` in `android/build.gradle.kts` for each release.
 
-## Contributing
+## Field test checklist
 
-`under_construction.gif`
+- [ ] USB-C ethernet to a node: Mesh tile shows `LINKED` and `10.41.0.0/16`; ping and
+      open a node's web UI by IP while LTE browsing still works.
+- [ ] Test mesh → "mesh link healthy"; Find devices lists nodes.
+- [ ] Tailnet services (TAK, Predator RF, admin panels) reachable at the same
+      time.
+- [ ] Two OpenRoute phones (or a phone and a tailnet laptop) on the same mesh:
+      `tailscale ping` / the peer details show a direct `10.41.x.x` path.
+- [ ] Static-IP radio Wi-Fi as default network: browser still works over
+      cellular with "Keep internet on cellular" on; Mesh status shows
+      "Cellular (rescue)" and the Internet tile says it's carrying app traffic.
+- [ ] Unplug the radio: routes drop within a few seconds; replug: they return.
+- [ ] Airplane mode + radio only, reboot: mesh routing still comes up.
 
-PRs welcome, but we are still working out our contribution process and
-tooling.
+## Known limits
 
-We require [Developer Certificate of
-Origin](https://en.wikipedia.org/wiki/Developer_Certificate_of_Origin)
-`Signed-off-by` lines in commits.
-
-## About Us
-
-We are [Tailscale](https://tailscale.com). See
-https://tailscale.com/company for more about us and what we're
-building.
-
-WireGuard is a registered trademark of Jason A. Donenfeld.
+- IPv4 only on the mesh (as with MeshRoute); multicast (e.g. ATAK SA) stays
+  native on the radio interface and is not routed through the VPN.
+- UDP broadcast to the mesh isn't relayed.
+- Mesh routing applies while OpenRoute is connected (VPN on).
+- Mesh nodes' own DNS (e.g. a node's dnsmasq at 10.41.x.1) isn't used:
+  Tailscale's DNS forwarder sockets are bound to the internet network, so a
+  Headscale split-DNS route to a mesh resolver won't answer. Use IPs, or add
+  the nodes as Headscale `dns.extra_records`, which MagicDNS answers locally.

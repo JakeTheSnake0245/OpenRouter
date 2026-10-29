@@ -452,4 +452,23 @@
     <string name="mesh_host_alert_title">Mesh host not responding</string>
     <string name="mesh_host_alert_text">%1$s stopped answering on the mesh link</string>
     <string name="use_organization_server">Use your organization\'s server</string>
+    <!-- OpenRoute status dashboard -->
+    <string name="dash_links">Status</string>
+    <string name="dash_tailnet">Tailnet</string>
+    <string name="dash_secure">Secure</string>
+    <string name="dash_devices_online">%1$d of %2$d devices online</string>
+    <string name="dash_devices_title">Devices</string>
+    <string name="dash_mesh">Mesh</string>
+    <string name="dash_off">Off</string>
+    <string name="dash_degraded">Degraded</string>
+    <string name="dash_linked">Linked</string>
+    <string name="dash_link_up">Link up</string>
+    <string name="dash_no_link">No link</string>
+    <string name="dash_internet">Internet</string>
+    <string name="dash_device_default">Default</string>
+    <string name="dash_down">Down</string>
+    <string name="dash_rescue_active">Carrying app traffic around the radio</string>
+    <string name="dash_internet_direct">Tailnet and apps use it directly</string>
+    <string name="dash_show_addresses">Show</string>
+    <string name="dash_hide_addresses">Hide</string>
 </resources>

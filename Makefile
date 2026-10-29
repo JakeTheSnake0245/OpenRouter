@@ -161,7 +161,7 @@ OPENROUTE_VERSION := $(shell sed -n 's/^val openRouteVersion = "\(.*\)"$$/\1/p' 
 
 .PHONY: openroute-apk
 openroute-apk: version
-	@test -f android/keystore.properties || { echo "android/keystore.properties missing; see README-OpenRoute.md"; exit 1; }
+	@test -f android/keystore.properties || { echo "android/keystore.properties missing; see README.md"; exit 1; }
 	# Always rebuild the Go library: the derived .so/.aar files don't track Go source changes.
 	rm -f libgojni.so.unstripped libgojni.so.stripped libgojni.so.debug $(LIBTAILSCALE_AAR)
 	$(MAKE) libtailscale

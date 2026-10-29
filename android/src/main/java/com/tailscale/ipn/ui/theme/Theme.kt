@@ -59,10 +59,11 @@ fun AppTheme(useDarkTheme: Boolean = isSystemInDarkTheme(), content: @Composable
 
 private val LightColors =
     lightColorScheme(
-        primary = Color(0xFF4B70CC), // blue-500
+        // OpenRoute: field green accent instead of Tailscale blue.
+        primary = Color(0xFF2F6B45),
         onPrimary = Color(0xFFFFFFFF), // white
-        primaryContainer = Color(0xFFF0F5FF), // blue-0
-        onPrimaryContainer = Color(0xFF3E5DB3), // blue-600
+        primaryContainer = Color(0xFFEAF3EC),
+        onPrimaryContainer = Color(0xFF1F4D31),
         error = Color(0xFFB22C30), // red-500
         onError = Color(0xFFFFFFFF), // white
         errorContainer = Color(0xFFFEF6F3), // red-0
@@ -88,28 +89,29 @@ private val LightColors =
 
 private val DarkColors =
     darkColorScheme(
-        primary = Color(0xFF3E5DB3), // blue-600
+        // OpenRoute: field green accent and green-black surfaces.
+        primary = Color(0xFF3B7D53),
         onPrimary = Color(0xFFFFFFFF), // white
-        primaryContainer = Color(0xFFf0f5ff), // blue-0
-        onPrimaryContainer = Color(0xFF5A82DC), // blue-400
+        primaryContainer = Color(0xFFEAF3EC),
+        onPrimaryContainer = Color(0xFF6FBF8A),
         error = Color(0xFFEF5350), // red-400
         onError = Color(0xFFFFFFFF), // white
         errorContainer = Color(0xFFfff6f4), // red-0
         onErrorContainer = Color(0xFF940822), // red-600
-        surfaceDim = Color(0xFF1f1e1e), // gray-900
-        surface = Color(0xFF232222), // gray-800
-        background = Color(0xFF181717), // gray-1000
-        surfaceBright = Color(0xFF444342), // gray-600
-        surfaceContainerLowest = Color(0xFF1f1e1e), // gray-900
-        surfaceContainerLow = Color(0xFF232222), // gray-800
-        surfaceContainer = Color(0xFF181717), // gray-1000
-        surfaceContainerHigh = Color(0xFF232222), // gray-800
-        surfaceContainerHighest = Color(0xFF2e2d2d), // gray-700
-        surfaceVariant = Color(0xFF1f1e1e), // gray-900
+        surfaceDim = Color(0xFF181B19),
+        surface = Color(0xFF1C1F1D),
+        background = Color(0xFF121413),
+        surfaceBright = Color(0xFF3A3F3B),
+        surfaceContainerLowest = Color(0xFF181B19),
+        surfaceContainerLow = Color(0xFF1C1F1D),
+        surfaceContainer = Color(0xFF121413),
+        surfaceContainerHigh = Color(0xFF1C1F1D),
+        surfaceContainerHighest = Color(0xFF242826),
+        surfaceVariant = Color(0xFF181B19),
         onSurface = Color(0xFFfaf9f8), // gray-0
         onSurfaceVariant = Color(0xFFafacab), // gray-400
         outline = Color(0xFF706E6D), // gray-500
-        outlineVariant = Color(0xFF2E2D2D), // gray-700
+        outlineVariant = Color(0xFF2C312E),
         inverseSurface = Color(0xFFEDEBEA), // gray-200
         inverseOnSurface = Color(0xFF000000), // black
         scrim = Color(0xAA000000), // black
@@ -324,14 +326,14 @@ val ColorScheme.secondaryButton: ButtonColors
     val defaults = ButtonDefaults.buttonColors()
     if (isSystemInDarkTheme()) {
       return ButtonColors(
-          containerColor = Color(0xFF4B70CC), // blue-500
+          containerColor = Color(0xFF2F6B45), // OpenRoute field green
           contentColor = Color(0xFFFFFFFF), // white
           disabledContainerColor = defaults.disabledContainerColor,
           disabledContentColor = defaults.disabledContentColor,
       )
     } else {
       return ButtonColors(
-          containerColor = Color(0xFF5A82DC), // blue-400
+          containerColor = Color(0xFF3B7D53), // OpenRoute field green
           contentColor = Color(0xFFFFFFFF), // white
           disabledContainerColor = defaults.disabledContainerColor,
           disabledContentColor = defaults.disabledContentColor,

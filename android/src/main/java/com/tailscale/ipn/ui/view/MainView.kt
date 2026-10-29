@@ -77,6 +77,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -128,6 +129,7 @@ data class MainViewNavigation(
     val onNavigateToSearch: () -> Unit,
     val onNavigateToMesh: () -> Unit,
     val onNavigateToCustomControl: () -> Unit,
+    val onNavigateToDevices: () -> Unit,
 )
 
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
@@ -173,14 +175,15 @@ fun MainView(
               }
             },
             headlineContent = {
-              user?.NetworkProfile?.tailnetNameForDisplay()?.let { domain ->
-                AutoResizingText(
-                    text = domain,
-                    style = MaterialTheme.typography.titleMedium.short,
-                    minFontSize = MaterialTheme.typography.minTextSize,
-                    overflow = TextOverflow.Ellipsis,
-                )
-              }
+              // OpenRoute: the control server's domain isn't shown on the main screen.
+              AutoResizingText(
+                  text = stringResource(R.string.app_name).uppercase(),
+                  style = MaterialTheme.typography.titleMedium.short,
+                  fontWeight = FontWeight.Bold,
+                  letterSpacing = 2.sp,
+                  minFontSize = MaterialTheme.typography.minTextSize,
+                  overflow = TextOverflow.Ellipsis,
+              )
             },
             supportingContent = {
               if (!hideHeader) {
@@ -219,9 +222,6 @@ fun MainView(
               }
             },
         )
-        if (!hideHeader) {
-          MeshStatusCard(onClick = navigation.onNavigateToMesh)
-        }
         when (state) {
           Ipn.State.Running -> {
             viewModel.maybeRequestVpnPermission()
@@ -243,11 +243,10 @@ fun MainView(
             if (pending.isNotEmpty()) {
               TaildropBannerView(viewModel = viewModel.pendingTaildrop)
             }
-            PeerList(
+            OpsDashboard(
                 viewModel = viewModel,
-                onNavigateToPeerDetails = navigation.onNavigateToPeerDetails,
-                onSearchBarClick = navigation.onNavigateToSearch,
-                onSearch = { viewModel.searchPeers(it) },
+                onNavigateToDevices = navigation.onNavigateToDevices,
+                onNavigateToMesh = navigation.onNavigateToMesh,
             )
           }
           Ipn.State.NoState,
@@ -869,8 +868,9 @@ fun PeerList(
                 }
               },
               supportingContent = {
+                // OpenRoute: no addresses in the device list; they're on the details screen.
                 Text(
-                    text = peer.Addresses?.first()?.split("/")?.first() ?: "",
+                    text = stringResource(peer.connectedStrRes(netmap)),
                     style =
                         MaterialTheme.typography.bodyMedium.copy(
                             lineHeight = MaterialTheme.typography.titleMedium.lineHeight
@@ -1127,6 +1127,7 @@ fun MainViewPreview() {
           onNavigateToSearch = {},
           onNavigateToMesh = {},
           onNavigateToCustomControl = {},
+          onNavigateToDevices = {},
       ),
       vm,
   )

@@ -229,7 +229,7 @@ fun SearchView(
                       supportingContent = {
                         Column {
                           Text(peerSet.sectionTitle())
-                          Text(peer.Addresses?.firstOrNull()?.split("/")?.first() ?: "No IP")
+                          Text(stringResource(peer.connectedStrRes(netmap)))
                         }
                       },
                       modifier =
